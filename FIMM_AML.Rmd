@@ -1,0 +1,1487 @@
+---
+title: "AML_Drug_Comnbination"
+output: 
+  pdf_document:
+    fig_caption: yes
+fontsize: 11pt
+geometry: margin=1in
+graphics: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE, fig.pos= "h")
+```
+
+# Library   
+```{r libraries and reading files, include=FALSE}
+library(kableExtra)
+options(knitr.table.format = "latex")
+library(readr)
+library(tidyverse)
+library(igraph)
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(fpc)
+library(grid)
+library(reshape2)
+library(topGO)
+library(dplyr)
+library(visNetwork)
+library(pheatmap)
+library(Rtsne)
+library(gridExtra)
+library(fpc)
+library(fgsea)
+library(data.table)
+library(reactome.db)
+library(org.Hs.eg.db)
+library(ggnewscale)
+library(NIMAA)
+library(viridis)
+library(viridisLite)
+library(ggpubr)
+library(rstatix)
+library(synergyfinder)
+library(readxl)
+library(reader)
+```
+
+# Data reading, cleaning, preprocessing
+
+**DSRT results** data set includes 967,921 experiments. Here, each row of data set was considered as an experiment. In this study we just consider the results of experiments on AML sample patients that inhibition measured by "Dead cells(CellTox Green) readout". The experiments with empty or NAN values on the `drug` and `disease.stage` fields are removed. The `remission`  samples and `dubious` experiments were removed as well. The experiments with empty `add.ons` values are considered. We analysed only `BM` samples. Here, we have three kind of mediums `CM 0.125`, `CM 0.25`,and `MCM`. We removed experiments on `MCM` medium. After data cleaning we get `aml_dead` with 75,278 rows and `healthy_dead` with 5,911 rows.
+
+## Dose-response Preprocessing
+
+For each experiment the vector of dose-response was normalized. At first values larger than 100 set to 100 and values below 0 set to zero. In order to keep decreasing or increasing pattern of response function, the middle values are smoothed.  
+
+```{r normalized_dose-response}
+aml_raw <- readRDS(file = "data/rds/aml_raw.rds");
+healthy_raw <- readRDS(file = "data/rds/healthy_raw.rds");
+smooth_response <- function(dose_response,readout) {options(digits=2)
+  A <- as.numeric(unlist(strsplit(as.character(dose_response),";")))
+  A[A > 100] <- 100;A[A < 0] <- 0
+  An <- A[-5];Ab <- append(0, An);diff <- A - Ab;
+  idx <- which(diff == -100);idxm <-idx[!(idx == 1 | idx ==5)];
+  idx5 <- idx[(idx ==5)]
+  A[idxm-1] <- 0
+  An <- A[-5];Ab <- append(0, An);diff <- A - Ab;
+  idx <- which(diff < 0);idxm <-idx[!(idx == 1 | idx ==5)];
+  idx5 <- idx[(idx ==5)]
+  A[idxm] <- (A[idxm-1] + A[idxm+1]) / 2; A[idx5] <- A[4]
+  A <- round(A,digits = 2)
+  vectStr=paste(as.character(A), sep="' '", collapse=";")
+  df <- data.frame(vectStr)
+  colnames(df) <- c("response")
+  return(df)
+}
+
+norm_response <- data.frame(do.call(rbind,lapply(1:dim(aml_raw)[1], function(x) smooth_response (aml_raw$dose.response[x],aml_raw$readout[x]))))
+aml <- cbind(aml_raw,norm_response)
+rm(norm_response)
+#saveRDS(aml, file = "data/rds/aml.rds")  
+norm_response <- data.frame(do.call(rbind,lapply(1:dim(healthy_raw)[1], function(x) smooth_response (healthy_raw$dose.response[x],healthy_raw$readout[x]))))
+healthy <- cbind(healthy_raw,norm_response)
+rm(norm_response)
+#saveRDS(healthy, file = "data/rds/healthy.rds") 
+```
+
+# Full submatrix
+
+## Mean value of dose response calculation
+The mean value of drug response for each experiment is calculated. Then the matrix of sample-by-drug in which its entries are the mean value of the effect of drug on specific sample is constructed. This matrix includes 199 samples-by 625 drugs.
+```{r mean_value}
+aml <- readRDS(file = "data/rds/aml.rds");
+healthy <- readRDS(file = "data/rds/healthy.rds")
+#-----------------------calculation of mean value of drug response--------------------------------
+splitdat = do.call(rbind, strsplit(aml$response, ";"))
+splitresp = data.frame(apply(splitdat, 2, as.numeric))
+names(splitresp) = paste("dose", 1:5, sep = "")
+aml <- cbind(aml,splitresp)
+sample_drug_response <- aml %>%
+  group_by(sample, drug) %>% 
+  dplyr::summarise(across(dose1:dose5, mean)) # mean on replicates
+sample_drug_response <- cbind(sample_drug_response,mean=rowMeans(sample_drug_response[3:7], na.rm=TRUE))
+#saveRDS(sample_drug_response, file = "data/rds/sample_drug_response.rds") 
+#------------------------selecting sample, drug, and mean value and spread it-----------------------
+sample_drug_mean <- sample_drug_response %>% dplyr::select(sample,drug, mean) %>% spread(drug, mean)
+sample_drug_matrix_mean <- (as.matrix(sample_drug_mean[,-c(1)]))
+rownames(sample_drug_matrix_mean) <- sample_drug_mean$sample
+#saveRDS(sample_drug_matrix_mean,file ="data/rds/sample_drug_matrix_mean.rds")
+```
+
+## Full AML submatrix extraction
+
+The full sub matrix with no missing entries is extracted and then min_max normalization procedure implemented on it. The matrix includes 81 samples and 296 drugs.
+```{r Full_submatrix}
+sample_drug_matrix_mean <- readRDS(file = "data/rds/sample_drug_matrix_mean.rds")
+healthy <- readRDS(file = "data/rds/healthy.rds")
+#-----------------------extraction of full submatrix--------------------------------------------
+sub_matrices <- extractSubMatrix(sample_drug_matrix_mean,
+                                 shape = "All",
+                                 verbose = FALSE,
+                                 palette = "Greys",
+                                 row.vars = NULL,
+                                 col.vars = NULL, 
+                                 bar = 1,
+                                 plot_weight = FALSE,
+                                 print_skim = F)
+
+max_rec_mean <- sub_matrices$Rectangular_element_max
+#saveRDS(max_rec_mean, file = "data/rds/max_rec_mean.rds")
+drugs <- colnames(max_rec_mean)
+healthy_rec <- healthy[healthy$drug %in% drugs,]
+#saveRDS(healthy_rec, file = "data/rds/healthy_rec.rds") 
+#-------------------minmax normalization-----------------------------
+max_rec_minmax <- (max_rec_mean - min(max_rec_mean))/(max(max_rec_mean)-min(max_rec_mean))
+#saveRDS(max_rec_minmax, file = "data/rds/max_rec_minmax.rds")
+rm(list=c("aml","splitdat","splitresp","sample_drug_matrix","drugs"))
+```
+
+## Healthy induced submatrix
+
+The results of drug response on healthy samples trimmed according to 296 drugs in AML full submatrix. The mean value of drug response for each experiment is calculated. This matrix includes 7 samples-by 296 drugs.
+```{r}
+healthy_rec <- readRDS(file = "data/rds/healthy_rec.rds")
+#-----------------------calculation of mean value of drug response--------------------------------
+splitdat = do.call(rbind, strsplit(healthy_rec$response, ";"))
+splitresp = data.frame(apply(splitdat, 2, as.numeric))
+names(splitresp) = paste("dose", 1:5, sep = "")
+healthy_rec <- cbind(healthy_rec,splitresp)
+sample_drug_response_healthy <- healthy_rec %>%
+  group_by(sample, drug) %>% 
+  dplyr::summarise(across(dose1:dose5, mean))# mean on biological replicates
+#---------------------mean on dose response values--------------------
+sample_drug_response_healthy <- 
+  cbind(sample_drug_response_healthy,mean=rowMeans(sample_drug_response_healthy[3:7], na.rm=TRUE))
+#----------------------minmax normalization-------------------------
+sample_drug_response_healthy <- sample_drug_response_healthy  %>%
+  transform(minmax = (mean - min(.$mean)) / (max(.$mean) - min(.$mean)))
+#saveRDS(sample_drug_response_healthy, file = "data/rds/sample_drug_response_healthy.rds") 
+```
+
+# Network analysis
+## Bipartite Network construction
+
+The bipartite network is constructed using full sub_matrix. The data matrix A = sample_drug_wmean was used to construct a weighted bipartite network where V1 = S was set of 81 samples, and V2 = D consisted of 296 drugs. The weight of the edge that joins node si (sample i) and node dj (drug j) was the ij entry of the matrix A. A weighted bipartite network was built, with two parts: samples and compounds, and weight representing the inhibition rate.
+```{r}
+max_rec <- readRDS(file = "data/rds/max_rec_minmax.rds")
+# ---------this dataframe includes the final minmax normalized aml sample drugs-----
+sample_drug_wmean <- melt(as.matrix(max_rec))
+colnames(sample_drug_wmean) <- c("sample","drug","w_mean")
+#------------network construction based on sample_drug_wmean dataframe-----
+bipart_wmean <-  sample_drug_wmean %>% graph_from_data_frame(directed = FALSE)
+V(bipart_wmean)$type[1:81] <- FALSE
+V(bipart_wmean)$type[82:377] <- TRUE
+E(bipart_wmean)$weight <- sample_drug_wmean[,3]
+V(bipart_wmean)$color <- c("steel blue", "orange")[V(bipart_wmean)$type+1]
+V(bipart_wmean)$shape <- c("square", "circle")[V(bipart_wmean)$type+1]
+#saveRDS(bipart_wmean, file = "data/rds/bipart_wmean.rds")
+#saveRDS(sample_drug_wmean, file = "data/rds/sample_drug_wmean.rds")
+```
+
+### Visualization
+
+Bipartite network visualization
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#plot(sample_drug_net_median_sq, vertex.label=NA, vertex.size=(2-V(sample_drug_net_median_sq)$type)*4, layout = layout_nicely)
+library(GGally )
+library(cowplot )
+library(ggpubr)
+bipart_wmean <- readRDS(file = "data/rds/bipart_wmean.rds")
+sample_drug_wmean <- readRDS(file = "data/rds/sample_drug_wmean.rds")
+bg <- ggnet2(bipart_wmean, size = 2.5, color = (4 - V(bipart_wmean)$type), edge.alpha = 0.02, palette = "Set1", 
+layout.par = list(cell.jitter = .08) )+
+#  theme(legend.position = "none")+
+#  scale_color_discrete(name = "Node", labels = c("Sample", "Drug"))
+scale_color_manual(name = "", labels = c("Patient-derived Sample", "Chemical Compound"), values=c("cornflowerblue", "darkorange"))
+wg <- ggplot(sample_drug_wmean, aes(1, w_mean))+
+  geom_jitter( shape = 21, size=2, color="darkorange",alpha=0.1)+
+     geom_violin(alpha = 0.4, size=1, color="cornflowerblue", draw_quantiles = c(0.25, 0.5, 0.75)) +
+     theme_pubr()+ ylim(0,0.05)+ coord_flip() + xlim(0.5, 4)+ 
+   ylab("")+
+  annotate("text", label = 'atop(bold("Weight of bigraph edges"))', 
+           x = 1.4, y = 0.025, size = 6, colour = "black", parse = TRUE)+
+  theme(axis.line.y = element_blank(), axis.ticks.y = element_blank(), 
+        axis.text.y = element_blank(), axis.title.y = element_blank(),
+        axis.line.x = element_blank(), axis.title.x = element_text(face = "bold"),
+        plot.title = element_text(face = "bold", size = 24))
+  #geom_violin()+ ylim(0,0.05)+ coord_flip()+theme()
+wg
+
+inset_plot <- ggdraw()+
+  draw_plot(wg)+
+  draw_plot(bg, x = 0.1, y = 0.35, width = 0.8, height = 0.6)
+inset_plot
+# forGephi <- as_edgelist(sample_drug_net_median_sq)
+# colnames(forGephi) <- c("Source", "Target")
+# write.csv(forGephi, file = "gephi2.csv", row.names = FALSE, col.names = FALSE, na = "", sep = ",")
+#saved in pdf format in 9.5X10.5 inch as bipartite.pdf
+
+```
+
+## Projection of Bipartite network on drugs
+
+A bipartite network can be projected into two different types of unipartite networks containing nodes of only one type. The projection of the bipartite network onto the "drug" node set was calculated: "proj_drug_network"
+```{r}
+sample_drug_wmean <- readRDS(file = "data/rds/sample_drug_wmean.rds")
+sample_drug_net_mean_incd <- sample_drug_wmean %>% spread(key = drug, value = w_mean) %>% column_to_rownames("sample") %>% as.matrix
+dim(sample_drug_net_mean_incd)
+#str(sample_drug_net_mean_incd)
+proj_drug <- t(sample_drug_net_mean_incd) %*% (sample_drug_net_mean_incd)
+#dim(proj_drug)
+proj_drug_network <- graph_from_adjacency_matrix((proj_drug), mode = "upper", weighted = TRUE, diag = FALSE)
+#igraph::components(proj_drug_network)
+#saveRDS(proj_drug_network, file = "data/rds/proj_drug_network.rds")
+drug_proj_df <- as_data_frame(proj_drug_network)
+#saveRDS(drug_proj_df, file = "data/rds/drug_proj_df.rds")
+#write_csv(data.frame(proj_drug_med_sq), "Fig4.csv")
+```
+
+### Removing weak edges
+
+ Only edges with a weight greater than the median of similarities were kept in order to consider them strong enough edges in the projected network.
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+proj_drug_network <- readRDS(file = "data/rds/proj_drug_network.rds")
+#-----------------------------remove edges < median(weights)------------------
+proj_drug_network_del <- delete_edges(proj_drug_network,which(E(proj_drug_network)$weight <= 0.2))
+proj_drug_network_del_w <- proj_drug_network_del
+#--------------------change weighted network into unweighted network---------------
+E(proj_drug_network_del)[weight > 0.2]$weight <- 1
+degrees.G <- igraph::degree(g)
+
+edge_density(proj_drug_network_del, loops = FALSE)
+transitivity(proj_drug_network_del)
+components(proj_drug_network_del)$no
+#saveRDS(proj_drug_network_del, file = "data/rds/proj_drug_network_del.rds")
+#saveRDS(proj_drug_network_del_w, file = "data/rds/proj_drug_network_del_w.rds")
+```
+
+### Drug-drug similarity Network Clustering
+
+The projected network was clustered using louvain algorithm. We found two clusters of drugs g1 = 155 and g2 = 141 sizes.
+
+```{r fast_greedy, echo=FALSE, message=FALSE, warning=FALSE}
+proj_drug_network_del <- readRDS(file = "data/rds/proj_drug_network_del.rds")
+shortpath <- distances(proj_drug_network_del,
+                       v = V(proj_drug_network_del), 
+                       to = V(proj_drug_network_del), 
+                       mode = c("all"),
+                       algorithm = c("dijkstra"))
+g <- proj_drug_network_del
+#---------------louvain clustering-------------------------------------------
+community_lou <- cluster_louvain(g)
+md <- round(modularity(g, membership(community_lou),weights = NULL),3)#modularity index
+sz <- sizes(community_lou)# number of communities
+V(g)$memb <- membership(community_lou)
+#-----------------------------------------------------------------------------
+#cl_lou <- cluster.stats(d = shortpath,
+#                        membership(community_lou), 
+#                       alt.clustering = NULL,
+#                        noisecluster=FALSE)
+#sil_lou <- cl_lou$clus.avg.silwidths;mu_sl <- round(mean(sil_lou),3)
+#---------------induced subgraphs on each cluster-------------------
+g1 <- induced.subgraph(g,vids=V(g)[V(g)$memb ==1])
+g2 <- induced.subgraph(g,vids=V(g)[V(g)$memb ==2]) 
+#length(V(g)[V(g)$memb ==1])
+#length(V(g)[V(g)$memb ==2])
+#saveRDS(g, file = "data/rds/g.rds")
+#saveRDS(g1, file = "data/rds/g1.rds")
+#saveRDS(g2, file = "data/rds/g2.rds") 
+```
+# Computational Validation
+
+To accomplish intra-cluster homogeneity analysis, we employed two computational methods. The first method identified the significant difference between biological pathways of drug targets’ protein targets at each cluster, while the second evaluated drug chemical structure similarity at each cluster. 
+Using the drug-target common (DTC) database we built a drug-target network, which was a bipartite network in which each link connects drugs to their protein targets. "drug_target" file includes protein targets of drugs at this study. 
+
+##  protein target of drugs at each cluster
+
+Protein targets of drugs at each cluster identified. "dtc_fimm_cl_list1" includes protein targets of drugs at cluster 1 and "dtc_fimm_cl_list2" includes protein targets of drugs at cluster 2.
+```{r}
+g <- readRDS(file = "data/rds/g.rds")
+drug_target <- readRDS(file= "data/rds/drug_target.rds")
+drug1 <- as.character(V(g)$name[V(g)$memb == 1])
+drug2 <- as.character(V(g)$name[V(g)$memb == 2])
+dtc_fimm_cl1 <- drug_target %>% filter(drug  %in%  drug1)
+dtc_fimm_cl2 <- drug_target %>% filter(drug  %in%  drug2)
+dtc_fimm_cl_list1 <- dtc_fimm_cl1 %>% split(list(.$drug))
+dtc_fimm_cl_list2 <- dtc_fimm_cl2  %>% split(list(.$drug))
+dtc_fimm_cl_list <- drug_target %>% split(list(.$drug))
+drug_untargeted <-data.frame(drug = V(g)$name [!V(g)$name %in% unique(drug_target$drug)])
+#saveRDS(dtc_fimm_cl_list1, file = "data/rds/dtc_fimm_cl_list1.rds")
+#saveRDS(dtc_fimm_cl_list2, file = "data/rds/dtc_fimm_cl_list2.rds")
+#saveRDS(dtc_fimm_cl_list, file = "data/rds/dtc_fimm_cl_list.rds")
+```
+
+## Frequency of targetted proteins by drugs at each cluster.
+
+The frequency of protein targets by drugs at each cluster is calculated and saved at "freq_proteins" file.
+```{r, echo=FALSE, warning=FALSE, message=FALSE, include=FALSE }
+dtc_fimm_cl_list <- readRDS(file = "data/rds/dtc_fimm_cl_list.rds")
+dtc_fimm_cl_list1 <- readRDS(file = "data/rds/dtc_fimm_cl_list1.rds")
+dtc_fimm_cl_list2 <- readRDS(file = "data/rds/dtc_fimm_cl_list2.rds")
+#union of all protein targets in cluster 1:uni1 
+df_dtc_fimm <- as.data.frame(do.call(rbind, dtc_fimm_cl_list))
+colnames(df_dtc_fimm) <- c("drug","protein")
+df_dtc_fimm1 <- as.data.frame(do.call(rbind, dtc_fimm_cl_list1))
+colnames(df_dtc_fimm1) <- c("drug","protein")
+df_dtc_fimm2 <- as.data.frame(do.call(rbind, dtc_fimm_cl_list2))
+colnames(df_dtc_fimm2) <- c("drug","protein")
+uni_proteins <- unique(df_dtc_fimm$protein)# number of protein targets 
+uni_proteins1 <- unique(df_dtc_fimm1$protein)# number of protein targets of cluster 1
+uni_proteins2 <- unique(df_dtc_fimm2$protein)# number of protein targerts of cluster 2
+freq_proteins <- data.frame(protein = uni_proteins,freq1 = rep(0,length(uni_proteins)),
+                            freq2=rep(0,length(uni_proteins)))
+for (i in seq_along(dtc_fimm_cl_list1)) {
+  unii <- unique(as.vector(unique(unlist(strsplit(as.character(dtc_fimm_cl_list1[[i]]$target),",")))))
+    if (!is_empty(unii)){
+      if (!anyNA(unii)){
+        ind <-  freq_proteins$protein %in% unii
+        freq_proteins$freq1[ind] <- freq_proteins$freq1[ind] +1 
+      }
+    }
+}
+for (i in seq_along(dtc_fimm_cl_list2)) {
+  unij <- unique(as.vector(unique(unlist(strsplit(as.character(dtc_fimm_cl_list2[[i]]$target),",")))))
+    if (!is_empty(unij)){
+      if (!anyNA(unij)){
+        ind <-  freq_proteins$protein %in% unij
+       freq_proteins$freq2[ind] <- freq_proteins$freq2[ind] +1 
+      }
+    }
+}
+freq_proteins$sfreq1 <- (freq_proteins$freq1)/length(dtc_fimm_cl_list1)
+freq_proteins$sfreq2 <- (freq_proteins$freq2)/length (dtc_fimm_cl_list2)
+freq_proteins$ratio <-  ((freq_proteins$sfreq1)/(freq_proteins$sfreq2))
+#saveRDS(freq_proteins, file = "data/rds/freq_proteins.rds")
+#saveRDS(df_dtc_fimm1, file = "data/rds/df_dtc_fimm1.rds")
+#saveRDS(df_dtc_fimm2, file = "data/rds/df_dtc_fimm2.rds")
+```
+
+## logRatio 
+You do not need to run this chunk. All variables already saved. In this chunk we extracted the name of proteins, calculated logratio, and made a named vector "protein_list22" to do GSEA analysis. All variables needed for GSEA already saved.
+To better understand the protein targets of drugs in each cluster, we assign a score to each protein based on the number of distinct drugs targeting that protein in clusters 1 and 2. Let  "freq_proteins$freq1" ("freq_proteins$freq2" ) denotes the number of unique drugs in cluster C1 (C2) targeted a particular protein P. The score of protein P, defined by freq_proteins$ratio . Proteins with a score greater than log(2) are considered to be preferentially targeted by drugs in cluster 1, denoted by PPT1. Similarly, PPT2 proteins have a
+score of less than log(0.50)
+```{r}
+freq_proteins <- readRDS(file = "data/rds/freq_proteins.rds")
+###########pathway analysis using ratio of freq
+freq_proteins$ratio <- log(freq_proteins$ratio)
+freq_proteins$ratio[freq_proteins$freq2==0]=max(freq_proteins$ratio[is.finite(freq_proteins$ratio)])+1 
+freq_proteins$ratio[freq_proteins$ratio==-Inf]= min(freq_proteins$ratio[is.finite(freq_proteins$ratio)])-1 
+freq22_proteins <- dplyr::filter(freq_proteins,((freq_proteins$ratio >= log(2) ) |(freq_proteins$ratio <= log(0.5) )))
+#write.csv(freq22_proteins$protein,"data/xls/proteins_22.csv", row.names = FALSE)
+#saveRDS(freq22_proteins, file = "data/rds/freq22_proteins.rds")
+protein_genename <- read.delim("data/xls/protein_genename.txt")
+colnames(protein_genename) <-  c("protein", "genename")
+protein_geneid <- read.delim("data/xls/protein_geneid.txt")
+colnames(protein_geneid) <- c("protein","geneid")
+ids_22 <- left_join(protein_genename,protein_geneid,by="protein")
+#saveRDS(ids_22, file = "data/rds/ids_22.rds")
+freq22_protein_gene <- left_join(ids_22,freq22_proteins,by= "protein")
+#saveRDS(freq22_protein_gene, file = "data/rds/freq22_protein_gene.rds")
+original_gene_list <- freq22_proteins[,"ratio"]
+names(original_gene_list) <- (freq22_proteins[,1])
+protein_list22 <- na.omit(original_gene_list)
+protein_list22 = sort(protein_list22, decreasing = TRUE)# Making named variable includes the name of proteins and  associated freqs
+#saveRDS(protein_list22, file = "data/rds/protein_list22.rds")
+geneid_list <- freq22_protein_gene[,"ratio"]
+names(geneid_list) <- (freq22_protein_gene[,3])
+geneid_list22 <- na.omit(geneid_list)
+geneid_list22 = sort(geneid_list22, decreasing = TRUE)# Making named variable includes the name of proteins and  associated freqs
+#saveRDS(geneid_list22, file = "data/rds/geneid_list22.rds")
+genename_list <- freq22_protein_gene[,"ratio"]
+names(genename_list) <- (freq22_protein_gene[,2])
+genename_list22 <- na.omit(genename_list)
+genename_list22 = sort(genename_list22, decreasing = TRUE)# Making named variable includes the name of proteins and  associated freqs
+#saveRDS(genename_list22, file = "data/rds/genename_list22.rds")
+```
+
+## KEGG12
+KEGG pathway analysis using "clusterProfiler" package on "protein_list22". Do not need to run this chunk! We already saved
+all files needed for kegg pathway visualization in the next chunk. 
+```{r}
+library(clusterProfiler)
+freq22_proteins <- readRDS(file = "data/rds/freq22_proteins.rds")
+protein_list22 <- readRDS(file = "data/rds/protein_list22.rds")
+#library(organism, character.only = TRUE)
+# keytypes(org.Hs.eg.db)
+# organism = org.Hs.eg.db
+# kegg <- gseKEGG(geneList = protein_list22,
+#                organism = "hsa",
+#                nPerm        = 10000,
+#                minGSSize    = 10,
+#                maxGSSize    = 500,
+#                pvalueCutoff = 0.05,
+#               pAdjustMethod = "none",
+#                keyType = "uniprot")
+#saveRDS(kegg, file = "data/rds/kegg.rds")
+kegg <- readRDS(file = "data/rds/kegg.rds")
+
+g <- dotplot(kegg, showCategory=150, font.size = 9,split=".sign")
+kegg12 <- g$data
+
+kegg_12 <- kegg12 %>% 
+    mutate(protein = strsplit(as.character(kegg12$core_enrichment), "/")) %>% 
+    unnest(protein) %>%
+    left_join(freq22_proteins, by = "protein") %>%
+    dplyr::select(c(1,2,7,13,16,17,18,21)) %>%
+    mutate(freq_path = rep(1,886)) %>%
+    mutate(protein_group = ifelse(ratio >= log(2) , "PPT1","PPT2"))
+    #%>%  dplyr::filter(p.adjust< 0.01) 
+
+kegg_prot_w <- kegg_12 %>% 
+  group_by(Description,protein_group,.sign) %>% 
+  summarise(weight = sum(freq_path))
+kegg_prot_w_15 <- kegg_prot_w %>% dplyr::filter(weight > 10)
+ind_filter <- kegg_prot_w$Description %in% kegg_prot_w_15$Description
+kegg_protein22 <- kegg_prot_w[ind_filter,]
+#saveRDS(kegg_protein22, file = "data/rds/kegg_protein22.rds")
+protein_g1 <- kegg_12 %>% filter(protein_group =="PPT1")
+length(unique(protein_g1$protein))
+protein_g2 <- kegg_12 %>% filter(protein_group =="PPT2")
+length(unique(protein_g2$protein))
+```
+
+### Visualization
+Enriched KEGG pathways of proteins PPT1 and PPT2.
+```{r}
+library(ggalluvial)
+kegg_protein22 <- readRDS("data/rds/kegg_protein22.rds")
+#%%%%%%%%%%%Visualization%%%%%%%%%%%%%%%%%
+#, fontface = "bold"
+keg12 <- ggplot(data = kegg_protein22,
+       aes(axis1 = protein_group, axis2 = Description, y = weight)) +
+  geom_alluvium(aes(fill = Description), width = 5/16,alpha = 0.4, knot.pos = 0.4) +
+        geom_stratum()+
+    scale_x_discrete(limits = c(),expand = c(0.01, 0.4))+
+  geom_text(stat = "stratum",size=5,family = "serif",
+            aes(label = after_stat(stratum))) +
+  theme_void()+
+  theme( legend.position = "none" ) +
+  ggtitle("A) KEGG enriched pathways") +
+ theme(plot.title = element_text(hjust = 0.35, vjust=2.12))
+
+```
+
+## BP12
+Biological Processes using clusterProfiler package on "protein_list22" variable. Do not need to run this chunk! We already saved
+all files needed for kegg pathway visualization in the next chunk.
+```{r}
+protein_list22 <- readRDS(file = "data/rds/protein_list22.rds")
+library(clusterProfiler)
+#   keytypes(org.Hs.eg.db)
+#   organism = org.Hs.eg.db
+#   gseBP <- gseGO(geneList=protein_list22,
+#                ont ="BP",
+#                keyType = "UNIPROT",
+#                nPerm = 10000,
+#                minGSSize = 10,
+#                maxGSSize = 500,
+#                pvalueCutoff = 0.05,
+#                verbose = TRUE,
+#                OrgDb = organism,
+#                pAdjustMethod = "fdr" )
+# saveRDS(gseBP, file = "data/rds/gseBP.rds")
+gseBP <- readRDS(file = "data/rds/gseBP.rds")
+freq22_proteins <- readRDS(file = "data/rds/freq22_proteins.rds")
+g <- dotplot(gseBP, showCategory=133, font.size = 9,split=".sign")
+bp12 <- g$data
+
+bp_12 <- bp12 %>% 
+    mutate(protein = strsplit(as.character(bp12$core_enrichment), "/")) %>% 
+    unnest(protein) %>%
+    left_join(freq22_proteins, by = "protein") %>%
+    dplyr::select(c(1,2,7,13,16,17,18,21)) %>%
+    mutate(freq_path = rep(1,3034)) %>%
+    mutate(protein_group = ifelse(ratio >= log(2) , "PPT1","PPT2"))
+    #%>%  dplyr::filter(p.adjust< 0.01) 
+
+bp_prot_w <- bp_12 %>% 
+  group_by(Description,protein_group,.sign) %>% 
+  summarise(weight = sum(freq_path)) %>% dplyr::filter(weight > 10)
+
+# fdr_go_bp12_active <- bp12 %>% dplyr::filter(.sign =="activated") %>%  dplyr::select(ID,p.adjust)
+# fdr_go_bp12_supp <- bp12 %>% dplyr::filter(.sign =="suppressed") %>%  dplyr::select(ID,p.adjust)
+#  
+#  write.csv(fdr_go_bp12_active,"data/xls/GO/fdrgo_bp12_active.csv", row.names = FALSE)
+#  write.csv(fdr_go_bp12_supp,"data/xls/GO/fdrgo_bp12_supp.csv", row.names = FALSE)
+
+bp_prot_w_15_g1 <- bp_prot_w[c(36,13,22,56,50,49,53,52),] %>%
+  dplyr::filter(weight > 10)
+bp_prot_w_15_g2 <- bp_prot_w[c(90,17,29,20,11,130,25),] 
+ids <- c(bp_prot_w_15_g1$Description,bp_prot_w_15_g2$Description)
+ind_filter <- bp_prot_w$Description %in% (ids)
+bp_protein22 <- bp_prot_w[ind_filter,]
+saveRDS(bp_protein22,file = "data/rds/bp_protein22.rds" )
+```
+
+### Visualization
+Biological Processes of proteins PPT1 and PPT2.
+```{r}
+library(ggalluvial)
+bp_protein22 <- readRDS("data/rds/bp_protein22.rds")
+bp12 <- ggplot(data = bp_protein22,
+       aes(axis1 = protein_group, axis2 = Description, y = weight)) +
+  geom_alluvium(aes(fill = Description), width = 5/16,alpha = 0.4, knot.pos = 0.4) +
+        geom_stratum()+
+    scale_x_discrete(limits = c(),expand = c(0.01, 0.4))+
+  geom_text(stat = "stratum",size=5,family = "serif", aes(label = after_stat(stratum))) +
+  theme_void()+
+  theme( legend.position = "none" ) +
+  ggtitle("B) Biological Process") +
+   theme(plot.title = element_text(hjust = 0.28, vjust=2.12))
+# size 13 X 5 for save in pdf
+```
+
+merge two figures KEGG and biological processes.
+```{r}
+library("cowplot")
+library("grid")
+
+merg <- plot_grid(keg12, bp12,
+          ncol = 2,
+          labels = c("A","B"))
+#saved 22x10 pdf file
+```
+
+## Protein target groups
+
+We grouped proteins into 4 clusters. freqij are proteins that are targeted by at lease i drugs from cluster 1 and j drugs from cluster 2. p1 includes proteins that are mainly targeted by drugs in cluster 1 and p2 includes proteins that are mainly targeted by drugs in cluster 2. We do enrichment analysis on p1 and p2 to show that they are at different pathways.
+
+```{r}
+freq_proteins <- readRDS(file = "data/rds/freq_proteins.rds")
+freq22_proteins <- dplyr::filter(freq_proteins,(freq_proteins$freq1 > 2 & freq_proteins$freq2 > 2))
+#saveRDS(freq22_proteins, file = "data/rds/freq22_proteins.rds")
+freq12_proteins <- dplyr::filter(freq_proteins,(freq_proteins$freq1 <= 2 & freq_proteins$freq2 > 2))
+#saveRDS(freq12_proteins, file = "data/rds/freq12_proteins.rds")
+freq21_proteins <- dplyr::filter(freq_proteins,(freq_proteins$freq1 > 2 & freq_proteins$freq2 <= 2))
+#saveRDS(freq21_proteins, file = "data/rds/freq21_proteins.rds")
+freq11_proteins <- dplyr::filter(freq_proteins,(freq_proteins$freq1 <= 2 & freq_proteins$freq2 <= 2))
+#saveRDS(freq11_proteins, file = "data/rds/freq11_proteins.rds")
+#write.csv(freq12_proteins$protein, "data/xls/p2.csv" ,row.names = FALSE, quote = FALSE)
+#write.csv(freq21_proteins$protein, "data/xls/p1.csv" ,row.names = FALSE, quote = FALSE)
+```
+
+### Number of drugs that target proteins at each group
+
+The number of drugs that target proteins at each group of proteins are calculated. Especially, we expect to see that the proteins in freq12 are mainly targeted by drugs in cluster 2 (the similar results for freq21).
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, include=FALSE }
+freq21_proteins <-  readRDS(file = "data/rds/freq21_proteins.rds")
+freq11_proteins <-  readRDS(file = "data/rds/freq11_proteins.rds")
+freq12_proteins <-  readRDS(file = "data/rds/freq12_proteins.rds")
+freq22_proteins <-  readRDS(file = "data/rds/freq22_proteins.rds")
+df_dtc_fimm1 <- readRDS(file = "data/rds/df_dtc_fimm1.rds")
+df_dtc_fimm2 <- readRDS(file = "data/rds/df_dtc_fimm2.rds")
+#--------------------------freq12-----------------
+freq12_proteins <- left_join(freq12_proteins,df_dtc_fimm1,by = "protein");colnames(freq12_proteins)[colnames(freq12_proteins)=="drug"] <- "drug1"
+freq12_proteins <- left_join(freq12_proteins,df_dtc_fimm2,by = "protein");colnames(freq12_proteins)[colnames(freq12_proteins)=="drug"] <- "drug2"
+num_drug12_1 <- length(unique(freq12_proteins$drug1));num_drug12_2 <- length(unique(freq12_proteins$drug2))
+#---------------------------freq21-------------
+freq21_proteins <- left_join(freq21_proteins,df_dtc_fimm1,by = "protein");colnames(freq21_proteins)[colnames(freq21_proteins)=="drug"] <- "drug1"
+freq21_proteins <- left_join(freq21_proteins,df_dtc_fimm2,by = "protein");colnames(freq21_proteins)[colnames(freq21_proteins)=="drug"] <- "drug2"
+num_drug21_1 <- length(unique(freq21_proteins$drug1));num_drug21_2 <- length(unique(freq21_proteins$drug2))
+#-----------------------------freq11---------------
+freq11_proteins <- left_join(freq11_proteins,df_dtc_fimm1,by = "protein");colnames(freq11_proteins)[colnames(freq11_proteins)=="drug"] <- "drug1"
+freq11_proteins <- left_join(freq11_proteins,df_dtc_fimm2,by = "protein");colnames(freq11_proteins)[colnames(freq11_proteins)=="drug"] <- "drug2"
+num_drug11_1 <- length(unique(freq11_proteins$drug1));num_drug11_2 <- length(unique(freq11_proteins$drug2))
+#-----------------------------freq22---------------
+freq22_proteins <- left_join(freq22_proteins,df_dtc_fimm1,by = "protein");colnames(freq22_proteins)[colnames(freq22_proteins)=="drug"] <- "drug1"
+freq22_proteins <- left_join(freq22_proteins,df_dtc_fimm2,by = "protein");colnames(freq22_proteins)[colnames(freq22_proteins)=="drug"] <- "drug2"
+num_drug22_1 <- length(unique(freq22_proteins$drug1));num_drug22_2 <- length(unique(freq22_proteins$drug2))
+
+#write.csv(freq11_proteins$protein, "/Users/mehdimir/Documents/Projects/Git/AML_FIMM/Data/xls/p12.csv" ,row.names = FALSE, quote = FALSE) #for GO annotations using https://biit.cs.ut.ee/gprofiler/gost website
+
+```
+
+The proteins in freq12(freq21) analysed using pathway enrichment to show that they are significantly from different pathways.
+The enrichment analysis was done using shinyGO and the results saved at folder "xls" under the names BP1.csv, BP2.csv, kegg1.csv,
+kegg2.csv. The following four chunks make plots for enrichment analysis results.
+## BP1
+```{r}
+bp1 <- read.csv("data/xls/BP1.csv")
+bp1 <- bp1 %>% filter(Enrichment.FDR<0.05 & nGenes > 2)
+url_split <- data.frame(do.call("rbind",strsplit(as.character(bp1$URL),"/",fixed = TRUE))) 
+bp1 <- bp1 %>% mutate(logfdr = -log(bp1$Enrichment.FDR), go = url_split$X6) 
+fdr_go_bp1 <- dplyr::select(bp1,go,Enrichment.FDR)
+#write.csv(fdr_go_bp1,"data/xls/GO/fdrgo_bp1.csv", row.names = FALSE)
+bp1 <- bp1[c(4,1,21,53,23,13,36,26,121),]
+bp1 <- bp1[order(bp1$Fold.Enrichment,decreasing = T), ]  # sort
+bp1[2,5] <- "Positive regulation of\n protein import into nucleus "
+bp1[5,5] <- "Olefinic compound\n metabolic process" 
+#----------------------------visualization---------
+bp1f <- ggplot(bp1, aes(x=reorder(Pathway, Fold.Enrichment), y=Fold.Enrichment, color=logfdr)) + 
+  geom_point( aes( size = nGenes))  + 
+  scale_size(range = c(2, 3.5)) +
+  geom_segment(aes(y = 0, 
+                   x = reorder(Pathway, Fold.Enrichment), 
+                   yend = Fold.Enrichment, 
+                   xend = reorder(Pathway, Fold.Enrichment)),size = 1.5) +
+    theme_bw() +
+    theme(aspect.ratio = 0.82) +
+  theme(legend.position = c(0.8, 0.5),legend.title = element_text(size = 8), 
+        legend.text = element_text(size = 6),legend.direction = "vertical", 
+        legend.box = "horizontal")+
+  theme(axis.text.x = element_text(size = 12,colour = "black" ,family="Times New Roman")) +
+  theme(axis.text.y = element_text(size = 12,colour = "black" ,family="Times New Roman"))+
+  labs( subtitle="C) Biological Process: Protein targets G1", size =12) + 
+  guides(size=guide_legend("N. of Genes")) + 
+#  scale_color_gradient(low="blue", high="red" , name = "-log10(FDR)") +
+  scale_color_viridis_c(name = "-log10(FDR)")+  
+  ylab("Fold Enrichment")+
+  xlab("") +
+  coord_flip()
+```
+
+## BP2
+```{r}
+bp2 <- read.csv("data/xls/BP2.csv")
+bp2 <- bp2 %>% filter(Enrichment.FDR<0.05 & nGenes > 2)
+url_split <- data.frame(do.call("rbind",strsplit(as.character(bp2$URL),"/",fixed = TRUE))) 
+bp2 <- bp2 %>% mutate(logfdr = -log(bp2$Enrichment.FDR), go = url_split$X6) 
+fdr_go_bp2 <- dplyr::select(bp2,go,Enrichment.FDR)
+#write.csv(fdr_go_bp2,"data/xls/GO/fdrgo_bp2.csv", row.names = FALSE)
+bp2 <- bp2[c(1,2,31,42,3,56,11,27,31),]
+bp2 <- bp2[order(bp2$Fold.Enrichment,decreasing = T), ]  # sort
+bp2[3,5] = "Regulation of cyclin-dependent\n protein kinase activity"
+bp2[5,5] = "Protein-containing\n complex assembly"
+bp2[8,5] = "Response to oxygen\n containing compound "
+#----------------------------visualization---------
+bp2f <- ggplot(bp2, aes(x=reorder(Pathway, Fold.Enrichment), y=Fold.Enrichment, color=logfdr)) + 
+  geom_point( aes( size = nGenes))  + 
+  scale_size(range = c(2, 3.5)) +
+  geom_segment(aes(y = 0, 
+                   x = reorder(Pathway, Fold.Enrichment), 
+                   yend = Fold.Enrichment, 
+                   xend = reorder(Pathway, Fold.Enrichment),edge_size = nGenes),size = 1.5) +
+  theme_bw() +
+   theme(aspect.ratio = 0.82) +
+  theme(legend.position = c(0.8, 0.5),legend.title = element_text(size = 8), 
+        legend.text = element_text(size = 6),legend.direction = "vertical", 
+        legend.box = "horizontal")+
+    theme(axis.text.x = element_text(size = 12,colour = "black" ,family="Times New Roman")) +
+  theme(axis.text.y = element_text(size = 12,colour = "black" ,family="Times New Roman"))+
+  labs( subtitle="D) Biological Process: Protein targets G2", size =12) + 
+  guides(size=guide_legend("N. of Genes")) + 
+#  scale_color_gradient(low="blue", high="red" , name = "-log10(FDR)") +
+  scale_color_viridis_c(name = "-log10(FDR)")+  
+  ylab("Fold Enrichment")+
+  xlab("") +
+  coord_flip()
+
+```
+
+## KEGG1
+```{r}
+kegg1 <- read.csv("data/xls/kegg1.csv")
+kegg1 <- kegg1 %>% filter(Enrichment.FDR<0.05 & nGenes > 4)
+#kg1 <- kegg1[c(2,4,6,7,8,12,16),]
+kg1 <- kegg1
+kg1 <- kg1 %>% mutate(logfdr = -log(kg1$Enrichment.FDR)) 
+kg1 <- kg1[order(kg1$Fold.Enrichment,decreasing = T), ]  # sort
+#----------------------------visualization---------
+kg1f <- ggplot(kg1, aes(x=reorder(Pathway, Fold.Enrichment), y=Fold.Enrichment, color=logfdr)) + 
+  geom_point( aes( size = nGenes))  + 
+  scale_size(range = c(2, 3.5)) +
+  geom_segment(aes(y = 0, 
+                   x = reorder(Pathway, Fold.Enrichment), 
+                   yend = Fold.Enrichment, 
+                   xend = reorder(Pathway, Fold.Enrichment),edge_size = nGenes),size = 1.5) +
+  theme_bw() +
+  theme(aspect.ratio = 0.82) +
+   theme(legend.position = c(0.8, 0.5),legend.title = element_text(size = 8), 
+        legend.text = element_text(size = 6),legend.direction = "vertical", 
+        legend.box = "horizontal")+
+  theme(axis.text.x = element_text(size = 12,colour = "black" ,family="Times New Roman")) +
+  theme(axis.text.y = element_text(size = 12,colour = "black" ,family="Times New Roman"))+
+  labs( subtitle="E) KEGG: Protein targets G1", size = 12) + 
+  guides(size=guide_legend("N. of Genes")) + 
+#  scale_color_gradient(low="blue", high="red" , name = "-log10(FDR)") +
+  scale_color_viridis_c(name = "-log10(FDR)")+ 
+  guides(colour = guide_colourbar(order = 1))+
+  ylab("Fold Enrichment")+
+  xlab("") +
+  coord_flip()
+```
+
+## KEGG2
+```{r}
+kegg2 <- read.csv("data/xls/kegg2.csv")
+kegg2 <- kegg2 %>% filter(Enrichment.FDR<0.05 & nGenes > 3)
+kg2 <- kegg2 %>% mutate(logfdr = -log(kegg2$Enrichment.FDR)) 
+kg2 <- kg2[order(kg2$Fold.Enrichment,decreasing = T), ]  # sort
+kg2[4,5] = "Adrenergic signaling\n in cardiomyocytes"
+kg2[5,5] = "T-cell leukemia \n virus 1 infection"
+#----------------------------visualization---------
+kg2f <- ggplot(kg2, aes(x=reorder(Pathway, Fold.Enrichment), y=Fold.Enrichment, color=logfdr)) + 
+  geom_point( aes( size = nGenes))  + 
+  scale_size(range = c(2, 3.5)) +
+  geom_segment(aes(y = 0, 
+                   x = reorder(Pathway, Fold.Enrichment), 
+                   yend = Fold.Enrichment, 
+                   xend = reorder(Pathway, Fold.Enrichment),edge_size = nGenes),size = 1.5) +
+  theme_bw() +
+     theme(aspect.ratio = 0.82) +
+  theme(legend.position = c(0.8, 0.5),legend.title = element_text(size = 8), 
+        legend.text = element_text(size = 6),legend.direction = "vertical", 
+        legend.box = "horizontal")+
+  theme(axis.text.y = element_text(size = 12 ,colour = "black" ,family="Times New Roman")) +
+  theme(axis.text.x = element_text(size = 12 ,colour = "black" , family="Times New Roman"))+
+  labs(subtitle="F) KEGG: Protein targets G2",size = 12) + 
+  guides(size=guide_legend("N. of Genes")) + 
+#  scale_color_gradient(low="blue", high="red" , name = "-log10(FDR)") +
+  scale_color_viridis_c(name = "-log10(FDR)")+  
+  ylab("Fold Enrichment")+
+  xlab("") +
+  coord_flip()
+
+```
+
+ The following chunk make a grid of four BP1, BP2, kegg1, kegg2 plots
+```{r}
+library("cowplot")
+library("grid")
+
+merg <- plot_grid(bp1f, bp2f,kg1f,kg2f,
+          ncol = 2,
+          labels = c("A","B","C","D"))
+figure <- ggarrange(bp1f, bp2f,kg1f,kg2f,
+                    labels = c("", "","",""),
+                    ncol = 2, nrow = 2)
+figure
+
+#save 16x 16
+```
+
+##  DICE similarity if drugs at each cluster
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, include=FALSE}
+library(rcdk)
+dtc <- readRDS(file = "data/rds/dtc.rds")
+drug_inchi <- readRDS(file = "data/rds/drug_inchi.rds")
+drug_inchi_dtc <- left_join(drug_inchi,dtc,by = "InChI.Key")
+drug_inchi_dtc <- drug_inchi_dtc[,c(1,2)]
+colnames(drug_inchi_dtc) <- c("drug","InChI.Key")
+drug_inchi_dtc <- drug_inchi_dtc[!duplicated(drug_inchi_dtc), ]##removing duplicate rows.
+#-----------------reading smile file----------------
+smiles <- read.csv("data/xls/smiles.csv", sep=";")
+colnames(smiles) <- c("InChI.Key","Isomeric_smile","Canonical_smile")
+smile_can <- smiles[,c(1,3)]
+drug_inchi_smile <- left_join(drug_inchi_dtc,smile_can,by = "InChI.Key") %>% dplyr::filter(Canonical_smile !="")
+#------------------------------------------------------
+g <- readRDS(file = "data/rds/g.rds")
+drug1 <- as.character(V(g)$name[V(g)$memb == 1])
+drug2 <- as.character(V(g)$name[V(g)$memb == 2])
+smile_cl1 <- drug_inchi_smile %>% filter(drug  %in%  drug1)
+smile_cl2 <- drug_inchi_smile %>% filter(drug  %in%  drug2)
+mols1 <- parse.smiles(smile_cl1[ , 3, drop = TRUE])
+fps1 <- lapply(mols1, get.fingerprint, type='graph', size = 1024)
+fp.sim1 <- fingerprint::fp.sim.matrix(fps1, method = 'dice')
+mols2 <- parse.smiles(smile_cl2[ , 3, drop = TRUE])
+fps2 <- lapply(mols2, get.fingerprint, type='graph', size = 1024)
+fp.sim2 <- fingerprint::fp.sim.matrix(fps2, method = 'dice')
+bet_cl <- matrix(NA, nrow = length(fps1), ncol = length(fps2))
+for (i in 1:length(fps1)){
+  fp1 <- fps1[[i]]
+  for (j in 1:length(fps2)){
+    fp2 <- fps2[[j]]
+    bet_cl[i,j] <- fingerprint::fp.sim.matrix( list(fp1,fp2) )[1,2]
+  }
+}
+rand12 <- as.vector(bet_cl)
+
+diag(fp.sim1) <- 0
+clust1_sim <- t(fp.sim1)[lower.tri(t(fp.sim1))]
+# 2nd cluster  
+diag(fp.sim2) <- 0
+clust2_sim <- t(fp.sim2)[lower.tri(t(fp.sim2))]
+
+#Test significant difference between cluster 1 and 2.
+set.seed(5)
+ind_rnd <- sample (c(1:18189), size=10000, replace=F)
+dat <- data.frame(Cluster =
+                  factor(c(rep("Cluster 1",length(clust1_sim)),
+                           rep("Cluster 2",length(clust2_sim)),
+                           rep("Intercluster",10000))), 
+                  sim = c(clust1_sim,clust2_sim,rand12[ind_rnd]))
+head(dat)
+# Density plots with semi-transparent fill
+
+library(plyr)
+library(ggpubr)
+cdat <- ddply(dat, "Cluster", summarise, sim.mean=mean(sim))
+ggplot(dat, aes(x=sim, colour=Cluster)) +
+    geom_density() +
+    geom_vline(data=cdat, aes(xintercept=sim.mean,  colour=Cluster),
+               linetype="dashed", size=1)
+
+ggplot(dat, aes(x=Cluster, y=sim, fill=Cluster,color =  Cluster)) + 
+  geom_boxplot(alpha = 0.5, col = "gray40") +   
+  theme_pubr(border = TRUE)+
+#  stat_summary(fun.x="mean")+
+  theme(legend.position="top",legend.text = element_text(size=10, face="bold"),
+        legend.title=element_blank()) +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank())+
+  xlab("")+
+  ylab("Dice similarity of SMILEs") +
+  scale_fill_manual(values = c("slateblue3", "sienna1", "#353436")) +
+  coord_flip()
+#save 8x 4 pdf
+
+
+x <- c(clust1_sim,rand12)
+g <- factor(c(rep("1",length(clust1_sim)),rep("12",length(rand12))))
+kruskal.test(x, g)
+x <- c(clust2_sim,rand12)
+g <- factor(c(rep("2",length(clust2_sim)),rep("12",length(rand12))))
+kruskal.test(x, g)
+x <- c(clust1_sim,clust2_sim)
+g <- factor(c(rep("1",length(clust1_sim)),rep("2",length(clust2_sim))))
+
+
+```
+
+# Drug selection
+
+## Efficacy&Toxicity calculatin
+
+The average of efficacy and toxicity of each drug on 81 samples are calculated.
+
+```{r}
+sample_drug_response_healthy <- readRDS("data/rds/sample_drug_response_healthy.rds")
+max_rec_mean <- readRDS("data/rds/max_rec_mean.rds")
+max_rec_minmax <- readRDS("data/rds/max_rec_minmax.rds")
+g <- readRDS(file = "data/rds/g.rds")
+toxicity <- sample_drug_response_healthy %>% group_by(drug) %>% summarise(tox = mean(mean)) 
+w_toxicity <- sample_drug_response_healthy %>% group_by(drug) %>% summarise(w_tox = mean(minmax)) 
+tox_wtox <- left_join(toxicity,w_toxicity,by="drug") 
+effi <- as.data.frame(apply(max_rec_mean, 2,mean));w_effi <- as.data.frame(apply(max_rec_minmax, 2,mean))
+drug = V(g)$name
+drug_member_mean <- data_frame(drug = V(g)$name, 
+                               member = as.factor(V(g)$memb), 
+                               efficacy = effi[drug,],
+                               w_efficacy = w_effi[drug,])
+drug_mem_eff_tox <- left_join(drug_member_mean,tox_wtox,by="drug")
+#drug_mem_eff_tox <- saveRDS(drug_mem_eff_tox,"data/rds/drug_mem_eff_tox.rds")
+```
+
+## drug selection based on P-value < 0.05
+
+```{r}
+drug_mem_eff_tox <- readRDS(file="data/rds/drug_mem_eff_tox.rds")
+pval <- rep(100, 296)
+mue <- mean(drug_mem_eff_tox$efficacy);mut <- mean(drug_mem_eff_tox$tox)
+for (i in 1:296){
+  efi <- drug_mem_eff_tox$efficacy[i];toxi <- drug_mem_eff_tox$tox[i]
+  if (efi>mue & toxi < mut ){  
+  Fi <- drug_mem_eff_tox %>% filter(drug_mem_eff_tox$efficacy >= efi & drug_mem_eff_tox$tox <=toxi)
+  pval [i] <- dim(Fi)[1]/296
+  }
+}
+drug_mem_eff_tox_pval<- cbind(drug_mem_eff_tox,pval)
+drug_selected <- drug_mem_eff_tox %>% dplyr::filter(pval < 0.05)
+#saveRDS(drug_mem_eff_tox_pval,file = "data/rds/drug_mem_eff_tox_pval.rds")
+#saveRDS(drug_selected, file = "data/rds/drug_selected.rds")
+```
+
+## Visualization
+
+```{r}
+library(cowplot)
+drug_mem_eff_tox <- readRDS(file = "data/rds/drug_mem_eff_tox_pval.rds")
+
+main.plot <- ggplot(drug_mem_eff_tox, aes(x = efficacy, y = tox))+
+  geom_density_2d_filled(alpha = 0.5) +
+  geom_density_2d(size = 0.25, colour = "black")+
+  geom_point(aes(x = efficacy, y = tox, col = -log(pval)))  +
+  theme_bw() +
+  theme(legend.position = "none",axis.title = element_blank()) 
+#  xlab("Inhibition rate based on AMl samples") + ylab("Inhibition based on Healthy sample")
+inset.plot <- ggplot(drug_mem_eff_tox %>% filter(efficacy <=15 & tox <=15), aes(x = efficacy, y = tox))+
+  geom_density_2d_filled(alpha = 0.5) +
+  geom_density_2d(size = 0.25, colour = "black")+
+  geom_point(aes(x = efficacy, y = tox, col = -log(pval)))+
+  geom_label_repel(data=filter(drug_mem_eff_tox, pval<0.05), size =4, fontface = "bold",alpha = 0.7, aes(label=drug), max.overlaps = 30)+
+  theme_bw() +
+  theme(legend.position = "none", axis.title = element_text(size = 12)  ) +
+  xlab("Percentage of inhibition based on AMl samples (Efficacy)") + ylab("Percentage of inhibition based on Healthy sample (Toxicity)")
+plot.with.inset <-
+  ggdraw() +
+  draw_plot(inset.plot) +
+  draw_plot(main.plot, x = 0.06, y = .55, width = .45, height = .45)
+#save 8x6 pdf
+ggplot(drug_mem_eff_tox, aes(x = efficacy, y = tox))+
+  geom_density_2d_filled(alpha = 0.5) +
+  geom_density_2d(size = 0.25, colour = "black")+
+  geom_point(aes(x = efficacy, y = tox, col = -log(pval)))+
+  geom_label_repel(data=filter(drug_mem_eff_tox, pval<0.05), size =2, fontface = "bold",alpha = 0.7, aes(label=drug), max.overlaps = 30)+
+  theme_bw() +
+  theme(legend.position = "none") +
+  xlab("Efficacy") + ylab("Toxicity")
+```
+
+# CTG data analysis
+
+The synergy of selected drug combinations tested in CTG readout is calculated in this section.
+We have two folders AML and healthy include the response of drug combinations on diagonal matrix.
+We run decrease model to construct the whole matrix and then calculate the synergy scoring.
+We do not need to run this chunk. If you want to run this chunk you need to uncomment line 938 and 956 for healthy samples and also lines 939 and 955 for AML samples.
+
+## Decrease model on CTG results
+```{r}
+library(synergyfinder)
+library(readxl)
+library(dplyr)
+drug_selected <- readRDS("data/rds/drug_selected.rds")
+dr1 <- drug_selected %>% filter(member ==1) %>% dplyr::select(drug)
+dr2 <- drug_selected %>% filter(member ==2) %>% dplyr::select(drug)
+files <-list.files("data/xls/CTG/healthy/")
+#files <-list.files("data/xls/CTG/AML/")
+k <- 1
+n <- length(files)*28
+htb_res<- data.frame(sample = character(n),drug1 = character(n),
+                     drug2=character(n),group=character(n),
+                     cluster=character(n),mu1=double(n),
+                     high_dose1=double(n),mu2=double(n),high_dose2=double(n),
+                     mu=double(n),mu_diag = double(n),high_dose = double(n),
+                     md=double(n) ,md_diag=double(n),
+                     IR=double(n) ,IR_hd=double(n) , IR_diag=double(n),
+                     zip=double(n),zip_diag=double(n),zip_high_dose=double(n),
+                     hsa=double(n),hsa_diag=double(n),hsa_high_dose=double(n),
+                     bliss=double(n),bliss_diag=double(n),bliss_high_dose=double(n),
+                     loewe=double(n),loewe_diag=double(n),loewe_high_dose=double(n))
+for (f in files) {
+ # f <- files[5]
+ # g <- paste0("data/xls/CTG/AML/", f)
+  g <- paste0("data/xls/CTG/healthy/", f)
+  decrease <- read_excel(g)
+  pos_result <- decrease %>% 
+    filter((Drug1 %in% dr1$drug & Drug2 %in% dr2$drug)
+           |(Drug1 %in% dr2$drug & Drug2 %in% dr1$drug))
+  neg_result <- decrease %>% 
+    filter(!(Drug1 %in% dr1$drug & Drug2 %in% dr2$drug)
+           |(Drug1 %in% dr2$drug & Drug2 %in% dr1$drug))
+  inds_pos <- unique(pos_result$PairIndex)
+#---------------------------------------------------------
+  for (i in inds_pos){
+#    i= 4
+    datai <- filter(pos_result,PairIndex == i)
+    datai$Response[datai$Response <0 ] <- 0
+    datai$Response[datai$Response > 100 ] <- 100
+    data <- ReshapeData(datai,data_type = "inhibition")
+    data$drug_pairs$conc_unit2 = 'nM'
+    data$drug_pairs$conc_unit1 = 'nM'
+    datax <- CalculateSynergy(data)
+    htb_res$sample[k] <-f
+    htb_res$group[k] <-"Positive"
+    htb_res$drug1[k] <-datax$drug_pairs$drug1
+    htb_res$drug2[k] <-datax$drug_pairs$drug2
+    if (htb_res$drug1[k] %in% dr1$drug & htb_res$drug2[k] %in% dr1$drug){
+      htb_res$cluster[k] <- "11"
+      }else if (htb_res$drug1[k] %in% dr2$drug & htb_res$drug2[k] %in% dr2$drug){
+      htb_res$cluster[k] = "22"
+      }else{
+      htb_res$cluster[k] =  "12"
+      }
+    #----------inhibition---------------------
+    #-----------single------------------------
+    data1i <- datai %>% filter((Conc2 == 0))%>% filter(!(Conc1 == 0))
+    htb_res$mu1[k] <- mean(data1i$Response)
+    htb_res$high_dose1[k] <- mean(data1i$Response[5])
+    data2i <- datai %>% filter((Conc1 == 0))%>% filter(!(Conc2 == 0))
+    htb_res$mu2[k] <- mean(data2i$Response)
+    htb_res$high_dose2[k] <- mean(data2i$Response[5])
+    #--------------combinaion------------------
+    datai2 <- datai %>% filter(!(Conc1 == 0 | Conc2 == 0)) 
+    htb_res$mu[k] <- mean(datai2$Response)
+    mat_inh <- datai2[,c("Conc1","Conc2","Response")] %>%
+      spread(key = Conc1, value = Response) %>% as.matrix()
+    rownames(mat_inh) <- mat_inh[,1];mat_inh <- mat_inh[,-1]
+    htb_res$mu_diag[k] <- mean(mat_inh[col(mat_inh)==row(mat_inh)])
+    htb_res$high_dose[k] <- mat_inh[5,5]
+    htb_res$md[k] = median(datai2$Response)
+    htb_res$md_diag[k]= median(mat_inh[col(mat_inh)==row(mat_inh)])
+    #----------------IR & Idiff-------------------
+    htb_res$IR[k] = htb_res$mu[k]/max(htb_res$mu1[k],htb_res$mu2[k])
+    htb_res$IR_hd[k] = htb_res$high_dose[k]/max(htb_res$high_dose1[k],htb_res$high_dose2[k])
+    htb_res$IR_diag[k]= htb_res$mu_diag[k]/max(htb_res$mu1[k],htb_res$mu2[k])
+    #------------zip synergy-----------------------
+    syn <- datax$synergy_scores %>% filter(!(conc1 == 0 | conc2 == 0)) 
+    htb_res$zip[k] <-  mean(syn$ZIP_synergy)
+    mat_zip <- syn[,c("conc1","conc2","ZIP_synergy")] %>%
+      spread(key = conc1, value = ZIP_synergy) %>% as.matrix()
+    rownames(mat_zip) <- mat_zip[,1];mat_zip <- mat_zip[,-1]
+    htb_res$zip_diag[k] <- mean(mat_zip[col(mat_zip)==row(mat_zip)])
+    htb_res$zip_high_dose[k] <- mat_zip[5,5]
+    #------------hsa synergy-----------------------
+    htb_res$hsa[k] <-  mean(syn$HSA_synergy)
+    mat_hsa <- syn[,c("conc1","conc2","HSA_synergy")] %>%
+      spread(key = conc1, value = HSA_synergy) %>% as.matrix()
+    rownames(mat_hsa) <- mat_hsa[,1];mat_hsa <- mat_hsa[,-1]
+    htb_res$hsa_diag[k] <- mean(mat_hsa[col(mat_hsa)==row(mat_hsa)])
+    htb_res$hsa_high_dose[k] <- mat_hsa[5,5]
+   #------------bliss synergy-----------------------
+    htb_res$bliss[k] <-  mean(syn$Bliss_synergy)
+    mat_bliss <- syn[,c("conc1","conc2","Bliss_synergy")] %>%
+      spread(key = conc1, value = Bliss_synergy) %>% as.matrix()
+    rownames(mat_bliss) <- mat_bliss[,1];mat_bliss <- mat_bliss[,-1]
+    htb_res$bliss_diag[k] <- mean(mat_bliss[col(mat_bliss)==row(mat_bliss)])
+    htb_res$bliss_high_dose[k] <- mat_bliss[5,5]
+    #------------loewe synergy-----------------------
+    htb_res$loewe[k] <-  mean(syn$Loewe_synergy)
+    mat_loewe <- syn[,c("conc1","conc2","Loewe_synergy")] %>%
+      spread(key = conc1, value = Loewe_synergy) %>% as.matrix()
+    rownames(mat_loewe) <- mat_loewe[,1];mat_loewe <- mat_loewe[,-1]
+    htb_res$loewe_diag[k] <- mean(mat_loewe[col(mat_loewe)==row(mat_loewe)])
+    htb_res$loewe_high_dose[k] <- mat_loewe[5,5]
+    k <- k+1
+  }
+  inds_neg <- unique(neg_result$PairIndex)
+  for (i in inds_neg){
+    datai <- filter(neg_result,PairIndex == i)
+    datai$Response[datai$Response <0 ] <- 0
+    datai$Response[datai$Response > 100 ] <- 100
+    data <- ReshapeData(datai,data_type = "inhibition")
+    data$drug_pairs$conc_unit2 = 'nM'
+    data$drug_pairs$conc_unit1 = 'nM'
+    datax <- CalculateSynergy(data)
+    htb_res$sample[k] <-f
+    htb_res$group[k] <-"Negative"
+    htb_res$drug1[k] <-datax$drug_pairs$drug1
+    htb_res$drug2[k] <-datax$drug_pairs$drug2
+    if (htb_res$drug1[k] %in% dr1$drug & htb_res$drug2[k] %in% dr1$drug){
+      htb_res$cluster[k] <- "11"}
+    else if (htb_res$drug1[k] %in% dr2$drug & htb_res$drug2[k] %in% dr2$drug){
+      htb_res$cluster[k] = "22"
+      }else{
+      htb_res$cluster[k] =  "12"
+      }
+    #----------inhibition--------------
+    data1i <- datai %>% filter((Conc2 == 0))%>% filter(!(Conc1 == 0))
+    htb_res$mu1[k] <- mean(data1i$Response)
+    htb_res$high_dose1[k] <- mean(data1i$Response[5])
+    data2i <- datai %>% filter((Conc1 == 0))%>% filter(!(Conc2 == 0))
+    htb_res$mu2[k] <- mean(data2i$Response)
+    htb_res$high_dose2[k] <- mean(data2i$Response[5])
+
+    datai2 <- datai %>% filter(!(Conc1 == 0 | Conc2 == 0)) 
+    htb_res$mu[k] <- mean(datai2$Response)
+    mat_inh <- datai2[,c("Conc1","Conc2","Response")] %>%
+      spread(key = Conc1, value = Response) %>% as.matrix()
+    rownames(mat_inh) <- mat_inh[,1];mat_inh <- mat_inh[,-1]
+    htb_res$mu_diag[k] <- mean(mat_inh[col(mat_inh)==row(mat_inh)])
+    htb_res$high_dose[k] <- mat_inh[5,5]
+    htb_res$md[k] = median(datai2$Response)
+    htb_res$md_diag[k]= median(mat_inh[col(mat_inh)==row(mat_inh)])
+    #----------------IR & Idiff-------------------
+    htb_res$IR[k] = htb_res$mu[k]/max(htb_res$mu1[k],htb_res$mu2[k])
+    htb_res$IR_hd[k] = htb_res$high_dose[k]/max(htb_res$high_dose1[k],htb_res$high_dose2[k])
+    htb_res$IR_diag[k]= htb_res$mu_diag[k]/max(htb_res$mu1[k],htb_res$mu2[k])
+    #------------zip synergy-----------------------
+    syn <- datax$synergy_scores %>% filter(!(conc1 == 0 | conc2 == 0)) 
+    htb_res$zip[k] <-  mean(syn$ZIP_synergy)
+    mat_zip <- syn[,c("conc1","conc2","ZIP_synergy")] %>%
+      spread(key = conc1, value = ZIP_synergy) %>% as.matrix()
+    rownames(mat_zip) <- mat_zip[,1];mat_zip <- mat_zip[,-1]
+    htb_res$zip_diag[k] <- mean(mat_zip[col(mat_zip)==row(mat_zip)])
+    htb_res$zip_high_dose[k] <- mat_zip[5,5]
+    #------------hsa synergy-----------------------
+    htb_res$hsa[k] <-  mean(syn$HSA_synergy)
+    mat_hsa <- syn[,c("conc1","conc2","HSA_synergy")] %>%
+      spread(key = conc1, value = HSA_synergy) %>% as.matrix()
+    rownames(mat_hsa) <- mat_hsa[,1];mat_hsa <- mat_hsa[,-1]
+    htb_res$hsa_diag[k] <- mean(mat_hsa[col(mat_hsa)==row(mat_hsa)])
+    htb_res$hsa_high_dose[k] <- mat_hsa[5,5]
+   #------------bliss synergy-----------------------
+    htb_res$bliss[k] <-  mean(syn$Bliss_synergy)
+    mat_bliss <- syn[,c("conc1","conc2","Bliss_synergy")] %>%
+      spread(key = conc1, value = Bliss_synergy) %>% as.matrix()
+    rownames(mat_bliss) <- mat_bliss[,1];mat_bliss <- mat_bliss[,-1]
+    htb_res$bliss_diag[k] <- mean(mat_bliss[col(mat_bliss)==row(mat_bliss)])
+    htb_res$bliss_high_dose[k] <- mat_bliss[5,5]
+    #------------loewe synergy-----------------------
+    htb_res$loewe[k] <-  mean(syn$Loewe_synergy)
+    mat_loewe <- syn[,c("conc1","conc2","Loewe_synergy")] %>%
+      spread(key = conc1, value = Loewe_synergy) %>% as.matrix()
+    rownames(mat_loewe) <- mat_loewe[,1];mat_loewe <- mat_loewe[,-1]
+    htb_res$loewe_diag[k] <- mean(mat_loewe[col(mat_loewe)==row(mat_loewe)])
+    htb_res$loewe_high_dose[k] <- mat_loewe[5,5]
+    k <- k+1
+  }
+} 
+#saveRDS(htb_healthy,file = "data/rds/ctg_healthy.rds")
+#saveRDS(htb_aml,file = "data/rds/ctg_aml.rds")
+```
+
+## Toxicity vs Efficacy plots
+The following 6 chunk, make plots of response and synergy values for AML and healthy samples
+### mean response
+```{r}
+library(rstatix)
+ctg_healthy <- readRDS(file  = "data/rds/ctg_healthy.rds")
+ctg_aml <- readRDS(file = "data/rds/ctg_aml.rds")
+ctg_aml$drug1 = substr(ctg_aml$drug1, 1, 4)
+ctg_aml$drug2 = substr(ctg_aml$drug2, 1, 4)
+ctg_healthy$drug1 = substr(ctg_healthy$drug1, 1, 4)
+ctg_healthy$drug2 = substr(ctg_healthy$drug2, 1, 4)
+heal_com <- ctg_healthy %>% dplyr::select(sample,drug1,drug2,mu_diag) %>% 
+  group_by(drug1,drug2) %>% summarise(mu_diag_heal=mean(mu_diag))
+aml_com <- ctg_aml %>% dplyr::select(sample,drug1,drug2,cluster,group,mu_diag) %>%
+  group_by(drug1,drug2,cluster,group) %>% summarise(mu_diag_aml=mean(mu_diag))
+ctg_aml_hel <- left_join(aml_com,heal_com, by = c("drug1","drug2"))%>% 
+  mutate(ratio = mu_diag_aml/mu_diag_heal)
+#--------------------------P-value--------------------------------
+data <- ctg_aml_hel %>% filter(mu_diag_aml > quantile(ctg_aml_hel$mu_diag_aml,probs =0.25) & mu_diag_heal<quantile(ctg_aml_hel$mu_diag_heal,probs =0.75))
+prop_test(x = 9, n = 14, p = 0.3, detailed = TRUE,alternative = "greater")
+#------------------------------------------------------------------
+g_diag <- ggplot(ctg_aml_hel, aes(x = mu_diag_aml, y = mu_diag_heal)) +
+  geom_point(aes(colour = cluster), size = 5, alpha = 0.6) +
+  geom_label_repel(data=filter(ctg_aml_hel, mu_diag_aml> median(ctg_aml_hel$mu_diag_aml) & 
+                                 mu_diag_heal < median(ctg_aml_hel$mu_diag_heal)), 
+                   size =4.5, fontface = "bold",alpha = 0.7, 
+                   aes(label=paste0(drug1 ,",", drug2)), 
+                   max.overlaps = Inf,nudge_x = -1, 
+                   box.padding = 0.5,nudge_y = -1,
+                   segment.curvature = -0.1,segment.angle = 20) +
+ geom_hline(yintercept = median(ctg_aml_hel$mu_diag_heal), linetype = "dashed", color = "blue") +
+ geom_vline(xintercept = median(ctg_aml_hel$mu_diag_aml), linetype = "dashed", color = "red")+
+ annotate("text", x=46, y=18, label= "P-value < 0.006", size = 4.5, fontface = "bold",color = "black") +
+ theme(panel.background = element_rect(fill = "white", colour = "grey50")) +
+ theme(legend.position = c(0.15, 0.82),legend.title = element_text(size = 8), 
+               legend.text = element_text(size = 8)) +
+ theme(axis.text.y = element_text(face = "bold",size = 14)) +
+ theme(axis.text.x = element_text(face = "bold",size = 14)) +
+ xlab("Efficacy (AML Samples)") + ylab("Toxicity (Healthy Samples)") +
+ theme(axis.title.x = element_text(face = "bold",size = 14)) +
+ theme(axis.title.y = element_text(face = "bold",size = 14)) +
+scale_color_manual(name = "",labels=c("Cluster 1","Intercluster","Cluster 2"),values = c("#ffcf20FF","#10a53dFF","#541352FF")) +
+  theme(legend.text = element_text(size = 8, face = "bold",colour = "black"))
+
+```
+
+### zip
+```{r}
+ctg_healthy <- readRDS(file  = "data/rds/ctg_healthy.rds")
+ctg_aml <- readRDS(file = "data/rds/ctg_aml.rds")
+ctg_aml$drug1 = substr(ctg_aml$drug1, 1, 4)
+ctg_aml$drug2 = substr(ctg_aml$drug2, 1, 4)
+ctg_healthy$drug1 = substr(ctg_healthy$drug1, 1, 4)
+ctg_healthy$drug2 = substr(ctg_healthy$drug2, 1, 4)
+heal_com_hd <- ctg_healthy %>% dplyr::select(sample,drug1,drug2,zip_high_dose) %>% group_by(drug1,drug2) %>% summarise(zip_heal_hd=mean(zip_high_dose))
+aml_com_hd <- ctg_aml %>% dplyr::select(sample,drug1,drug2,cluster,group,zip_high_dose) %>%
+  filter(zip_high_dose>0) %>% group_by(drug1,drug2,cluster,group) %>% summarise(zip_aml_hd=mean(zip_high_dose))
+ctg_aml_hel <- left_join(aml_com_hd,heal_com_hd, by = c("drug1","drug2")) %>% 
+  mutate(ratio = zip_aml_hd/zip_heal_hd)
+#--------------------------P-value--------------------------------
+data <- ctg_aml_hel %>% filter(zip_aml_hd > quantile(ctg_aml_hel$zip_aml_hd,probs =0.25) & zip_heal_hd<quantile(ctg_aml_hel$zip_heal_hd,probs =0.75))
+prop_test(x = 8, n = 13, p = 0.3, detailed = TRUE,alternative = "greater")
+#------------------------------------------------------------------
+g_zip_hd <- ggplot(ctg_aml_hel, aes(x = zip_aml_hd, y = zip_heal_hd)) +
+  geom_point(aes(colour = cluster), size = 5, alpha = 0.6) +
+  geom_label_repel(data=filter(ctg_aml_hel, zip_aml_hd> median(ctg_aml_hel$zip_aml_hd) & 
+                                 zip_heal_hd < median(ctg_aml_hel$zip_heal_hd)), 
+                   size =4.5, fontface = "bold",alpha = 0.7, 
+                   aes(label=paste0(drug1 ,",", drug2)), 
+                   nudge_x = .2, 
+                   box.padding = 0.5,nudge_y = 1,
+                   segment.curvature = -0.1,segment.angle = 20) +
+ geom_hline(yintercept = median(ctg_aml_hel$zip_heal_hd), linetype = "dashed", color = "blue") +
+ geom_vline(xintercept = median(ctg_aml_hel$zip_aml_hd), linetype = "dashed", color = "red")+
+ annotate("text", x=11, y=-16, label= "P-value < 0.01", size = 4.5, fontface = "bold") +
+ theme(panel.background = element_rect(fill = "white", colour = "grey50"))+
+ theme(legend.position = c(0.15, 0.82),legend.title = element_text(size = 8), 
+               legend.text = element_text(size = 8))+
+ theme(axis.text.y = element_text(face = "bold",size = 14)) +
+ theme(axis.text.x = element_text(face = "bold",size = 14)) +
+ xlab("ZIP (AML Samples)") + ylab("ZIP (Healthy Samples)") +
+theme(axis.title.x = element_text(face = "bold",size = 14)) +
+ theme(axis.title.y = element_text(face = "bold",size = 14)) +
+ scale_color_manual(name = "",labels=c("Cluster 1","Intercluster","Cluster 2"),values = c("#ffcf20FF","#10a53dFF","#541352FF"))  +
+ theme(legend.text = element_text(size = 8, face = "bold"))
+
+#ggsave(paste0("data/wetlab/fig/tix_eff/ziphd.png"),width = 10, height = 15)
+```
+
+### hsa
+```{r}
+ctg_healthy <- readRDS(file  = "data/rds/ctg_healthy.rds")
+ctg_aml <- readRDS(file = "data/rds/ctg_aml.rds")
+ctg_aml$drug1 = substr(ctg_aml$drug1, 1, 4)
+ctg_aml$drug2 = substr(ctg_aml$drug2, 1, 4)
+ctg_healthy$drug1 = substr(ctg_healthy$drug1, 1, 4)
+ctg_healthy$drug2 = substr(ctg_healthy$drug2, 1, 4)
+heal_com_hd <- ctg_healthy %>% dplyr::select(sample,drug1,drug2,hsa_high_dose) %>% group_by(drug1,drug2) %>% summarise(hsa_heal_hd=mean(hsa_high_dose))
+aml_com_hd <- ctg_aml %>% dplyr::select(sample,drug1,drug2,cluster,group,hsa_high_dose) %>%
+  filter(hsa_high_dose>0) %>% group_by(drug1,drug2,cluster,group) %>% summarise(hsa_aml_hd=mean(hsa_high_dose))
+ctg_aml_hel <- left_join(aml_com_hd,heal_com_hd, by = c("drug1","drug2")) %>% 
+ mutate(ratio = hsa_aml_hd/hsa_heal_hd)
+#-----------------------P-value--------------------------
+data <- ctg_aml_hel %>% filter(hsa_aml_hd > quantile(ctg_aml_hel$hsa_aml_hd,probs =0.25) & hsa_heal_hd<quantile(ctg_aml_hel$hsa_heal_hd,probs =0.75))
+prop_test(x = 8, n = 14, p = 0.3, detailed = TRUE,alternative = "greater")
+#---------------------------------------------------------
+g_hsa_hd <- ggplot(ctg_aml_hel, aes(x = hsa_aml_hd, y = hsa_heal_hd)) +
+  geom_point(aes(colour = cluster), size = 5, alpha = 0.6) +
+  geom_label_repel(data=filter(ctg_aml_hel, hsa_aml_hd> mean(ctg_aml_hel$hsa_aml_hd) & 
+                                 hsa_heal_hd < median(ctg_aml_hel$hsa_heal_hd)), 
+                   size =4.5, fontface = "bold",alpha = 0.7, 
+                   aes(label=paste0(drug1 ,",", drug2)), 
+                   max.overlaps = Inf,nudge_x = .2, 
+                   box.padding = 0.5,nudge_y = 1,
+                   segment.curvature = -0.1,segment.angle = 20) +
+ geom_hline(yintercept = median(ctg_aml_hel$hsa_heal_hd), linetype = "dashed", color = "blue") +
+ geom_vline(xintercept = mean(ctg_aml_hel$hsa_aml_hd), linetype = "dashed", color = "red")+    
+ annotate("text", x=12, y=-2, label= "P-value < 0.02",  size = 4.5, fontface = "bold") +
+ theme(panel.background = element_rect(fill = "white", colour = "grey50"))+
+ theme(legend.position = c(0.15, 0.82),legend.title = element_text(size = 8), 
+               legend.text = element_text(size = 8))+
+ theme(axis.text.y = element_text(face = "bold",size = 14)) +
+ theme(axis.text.x = element_text(face = "bold",size = 14)) +
+theme(axis.title.x = element_text(face = "bold",size = 14)) +
+ theme(axis.title.y = element_text(face = "bold",size = 14)) +
+scale_color_manual(name = "",labels=c("Cluster 1","Intercluster","Cluster 2"),values = c("#ffcf20FF","#10a53dFF","#541352FF")) +
+  theme(legend.text = element_text(size = 8, face = "bold")) +
+ xlab("hsa (AML Samples)") + ylab("hsa (Healthy Samples)") 
+
+#ggsave(paste0("data/wetlab/fig/tix_eff/hsahd.png"),width = 10, height = 15)
+```
+
+### bliss
+```{r} 
+ctg_healthy <- readRDS(file  = "data/rds/ctg_healthy.rds")
+ctg_aml <- readRDS(file = "data/rds/ctg_aml.rds")
+ctg_aml$drug1 = substr(ctg_aml$drug1, 1, 4)
+ctg_aml$drug2 = substr(ctg_aml$drug2, 1, 4)
+ctg_healthy$drug1 = substr(ctg_healthy$drug1, 1, 4)
+ctg_healthy$drug2 = substr(ctg_healthy$drug2, 1, 4)
+heal_com_hd <- ctg_healthy %>% dplyr::select(sample,drug1,drug2,bliss_high_dose) %>% group_by(drug1,drug2) %>% summarise(bliss_heal_hd=mean(bliss_high_dose))
+aml_com_hd <- ctg_aml %>% dplyr::select(sample,drug1,drug2,cluster,group,bliss_high_dose) %>%
+  filter(bliss_high_dose>0) %>% group_by(drug1,drug2,cluster,group) %>% summarise(bliss_aml_hd=mean(bliss_high_dose))
+ctg_aml_hel <- left_join(aml_com_hd,heal_com_hd, by = c("drug1","drug2")) %>% 
+ mutate(ratio = bliss_aml_hd/bliss_heal_hd)
+#------------------P-value--------------------------------
+data <- ctg_aml_hel %>% filter(bliss_aml_hd > quantile(ctg_aml_hel$bliss_aml_hd,probs =0.25) & bliss_heal_hd<quantile(ctg_aml_hel$bliss_heal_hd,probs =0.75))
+prop_test(x = 9, n = 14, p = 0.3, detailed = TRUE,alternative = "greater")
+#-----------------------------------------------------------------------
+g_bliss_hd <- ggplot(ctg_aml_hel, aes(x = bliss_aml_hd, y = bliss_heal_hd)) +
+  geom_point(aes(colour = cluster), size = 5, alpha = 0.6) +
+  geom_label_repel(data=filter(ctg_aml_hel, bliss_aml_hd> median(ctg_aml_hel$bliss_aml_hd) & 
+                                 bliss_heal_hd < median(ctg_aml_hel$bliss_heal_hd)), 
+                   size =4.5, fontface = "bold",alpha = 0.7, 
+                   aes(label=paste0(drug1 ,",", drug2)), 
+                   box.padding = 0.5,
+                    ylim=c(-12,10),
+                   xlim=c(0,16),
+                   segment.curvature = -0.1,segment.angle = 20) +
+ geom_hline(yintercept = median(ctg_aml_hel$bliss_heal_hd), linetype = "dashed", color = "blue") +
+ geom_vline(xintercept = median(ctg_aml_hel$bliss_aml_hd), linetype = "dashed", color = "red")+
+ annotate("text", x=11, y=-12, label= "P-value < 0.006", size = 4.5, fontface = "bold") +
+ theme(panel.background = element_rect(fill = "white", colour = "grey50"))+
+ theme(legend.position = c(0.15, 0.82),legend.title = element_text(size = 8), 
+               legend.text = element_text(size = 8,face = "bold"))+
+ theme(axis.text.y = element_text(face = "bold",size = 14)) +
+ theme(axis.text.x = element_text(face = "bold",size = 14)) +
+theme(axis.title.x = element_text(face = "bold",size = 14)) +
+ theme(axis.title.y = element_text(face = "bold",size = 14)) +
+ scale_color_manual(name = "",labels=c("Cluster 1","Intercluster","Cluster 2"),values = c("#ffcf20FF","#10a53dFF","#541352FF")) +
+ xlab("bliss (AML Samples)") + ylab("bliss (Healthy Samples)") 
+
+#ggsave(paste0("data/wetlab/fig/tix_eff/blisshd.png"),width = 10, height = 15)
+```
+
+### loewe
+```{r}
+ctg_healthy <- readRDS(file  = "data/rds/ctg_healthy.rds")
+ctg_aml <- readRDS(file = "data/rds/ctg_aml.rds")
+ctg_aml$drug1 = substr(ctg_aml$drug1, 1, 4)
+ctg_aml$drug2 = substr(ctg_aml$drug2, 1, 4)
+ctg_healthy$drug1 = substr(ctg_healthy$drug1, 1, 4)
+ctg_healthy$drug2 = substr(ctg_healthy$drug2, 1, 4)
+heal_com_loewe_diag <- ctg_healthy %>% dplyr::select(sample,drug1,drug2,loewe_diag) %>% group_by(drug1,drug2) %>% summarise(loewe_diag_heal=mean(loewe_diag))
+aml_com_loewe_diag <- ctg_aml %>% dplyr::select(sample,drug1,drug2,cluster,group,loewe_diag) %>%
+  filter(loewe_diag>0) %>% group_by(drug1,drug2,cluster,group) %>% summarise(loewe_diag_aml=mean(loewe_diag))
+ctg_aml_hel <- left_join(aml_com_loewe_diag,heal_com_loewe_diag, by = c("drug1","drug2")) %>% 
+ mutate(ratio = loewe_diag_aml/loewe_diag_heal)
+#------------------P-value-------------------------------------
+data <- ctg_aml_hel %>% filter(loewe_diag_aml > quantile(ctg_aml_hel$loewe_diag_aml,probs =0.25) & loewe_diag_heal<quantile(ctg_aml_hel$loewe_diag_heal,probs =0.75))
+prop_test(x = 8, n = 14, p = 0.3, detailed = TRUE,alternative = "greater")
+#------------------------------------------------------------
+g_loewe_diag <- ggplot(ctg_aml_hel, aes(x = loewe_diag_aml, y = loewe_diag_heal)) +
+  geom_point(aes(colour = cluster), size = 5, alpha = 0.6) +
+  geom_label_repel(data=filter(ctg_aml_hel, loewe_diag_aml> median(ctg_aml_hel$loewe_diag_aml) & 
+                                 loewe_diag_heal < median(ctg_aml_hel$loewe_diag_heal)), 
+                   size =4.5, fontface = "bold",alpha = 0.7, 
+                   aes(label=paste0(drug1 ,",", drug2)), 
+                   nudge_x = .2, 
+                   box.padding = 0.5,nudge_y = 1,
+                   segment.curvature = -0.1,segment.angle = 20) +
+ geom_hline(yintercept = median(ctg_aml_hel$loewe_diag_heal), linetype = "dashed",color = "blue")+
+ geom_vline(xintercept = median(ctg_aml_hel$loewe_diag_aml), linetype = "dashed", color = "red")+
+ annotate("text", x=7, y=-1, label= "P-value < 0.02", size = 4.5, fontface = "bold") +
+ theme(panel.background = element_rect(fill = "white", colour = "grey50"))+
+ theme(legend.position = c(0.15, 0.82),legend.title = element_text(size = 8), 
+               legend.text = element_text(size = 8))+
+ theme(axis.text.y = element_text(face = "bold",size = 14)) +
+ theme(axis.text.x = element_text(face = "bold",size = 14)) +
+ theme(axis.title.x = element_text(face = "bold",size = 14)) +
+ theme(axis.title.y = element_text(face = "bold",size = 14)) +
+ scale_color_manual(name = "",labels=c("Cluster 1","Intercluster","Cluster 2"),values = c("#ffcf20FF","#10a53dFF","#541352FF")) +
+ theme(legend.text = element_text(size = 8, face = "bold")) +
+ xlab("loewe (AML Samples)") + ylab("loewe (Healthy Samples)") 
+```
+
+### CR
+```{r}
+ctg_healthy <- readRDS(file  = "data/rds/ctg_healthy.rds")
+ctg_aml <- readRDS(file = "data/rds/ctg_aml.rds")
+ctg_aml$drug1 = substr(ctg_aml$drug1, 1, 4)
+ctg_aml$drug2 = substr(ctg_aml$drug2, 1, 4)
+ctg_healthy$drug1 = substr(ctg_healthy$drug1, 1, 4)
+ctg_healthy$drug2 = substr(ctg_healthy$drug2, 1, 4)
+heal_com_IR <- ctg_healthy %>% dplyr::select(sample,drug1,drug2,IR) %>% group_by(drug1,drug2) %>% 
+  summarise(IR_heal=mean(IR))
+aml_com_IR <- ctg_aml %>% dplyr::select(sample,drug1,drug2,cluster,group,IR) %>%
+  filter(IR>1.1) %>% group_by(drug1,drug2,cluster,group) %>% summarise(IR_aml=mean(IR))
+ctg_aml_hel <- left_join(aml_com_IR,heal_com_IR, by = c("drug1","drug2")) %>% 
+  mutate(ratio = IR_aml/IR_heal)
+#----------------------------P-value--------------------------------------
+data <- ctg_aml_hel %>% filter(IR_aml > quantile(ctg_aml_hel$IR_aml,probs =0.25) & IR_heal<quantile(ctg_aml_hel$IR_heal,probs =0.75))
+prop_test(x = 8, n = 13, p = 0.3, detailed = TRUE,alternative = "greater")
+#-------------------------------------------------------------------------
+g_IR <- ggplot(ctg_aml_hel, aes(x = IR_aml, y = IR_heal)) +
+  geom_point(aes(colour = cluster), size = 5, alpha = 0.6) +
+  geom_label_repel(data=filter(ctg_aml_hel, IR_aml> median(ctg_aml_hel$IR_aml) & 
+                                 IR_heal < median(ctg_aml_hel$IR_heal)), 
+                   size =4.5, fontface = "bold",alpha = 0.7, 
+                   aes(label=paste0(drug1 ,",", drug2)), 
+                   max.overlaps = Inf,nudge_x = 0.1, 
+                   box.padding = 0.1,nudge_y = -0.2,
+                   segment.curvature = -0.1,segment.angle = 20) +
+ geom_hline(yintercept = median(ctg_aml_hel$IR_heal), linetype = "dashed", color = "blue") +
+ geom_vline(xintercept = median(ctg_aml_hel$IR_aml), linetype = "dashed", color = "red")+
+ annotate("text", x=1.5, y=1, label= "P-value < 0.01", size = 4.5, fontface = "bold") +
+ theme(panel.background = element_rect(fill = "white", colour = "grey50"))+
+ theme(legend.position = c(0.15, 0.82),legend.title = element_text(size = 8), 
+               legend.text = element_text(size = 8))+
+ theme(axis.text.y = element_text(face = "bold",size = 14)) +
+ theme(axis.text.x = element_text(face = "bold",size = 14)) +
+theme(axis.title.x = element_text(face = "bold",size = 14)) +
+ theme(axis.title.y = element_text(face = "bold",size = 14)) +
+ scale_color_manual(name = "",labels=c("Cluster 1","Intercluster","Cluster 2"),values = c("#ffcf20FF","#10a53dFF","#541352FF")) +
+ theme(legend.text = element_text(size = 8, face = "bold")) +
+ xlab("CR (AML Samples)") + ylab("CR (Healthy Samples)") 
+```
+
+Response and synergy figures
+```{r}
+library("cowplot")
+library("grid")
+
+g <- ggarrange(g_diag, g_zip_hd,g_hsa_hd,g_bliss_hd,g_loewe_diag,g_IR,ncol = 3, nrow = 2,
+               labels = c("A","B","C","D","E","F"))
+ggsave("data/fig/synergies.pdf",width = 16, height = 10)
+```
+
+# Flow-cytometry data analysis
+
+## boxplot of responses on different markers and CTG
+```{r}
+library(upstartr)
+flow_response <- readRDS(file = "data/rds/flow_response.rds")
+df <- flow_response %>% 
+  filter( ! (marker == "live" | marker == "monocyte-like" | marker== "CD11b+"
+              | marker == "singlets" | marker == "cd38+" | 
+               (sample == "BERG_47007") & marker == "lymphocytes" ) ) %>% 
+  mutate(dc = paste(drug1, "-",drug2)) 
+
+ctg_aml_response <- readRDS(file = "data/rds/ctg_aml_response.rds")
+ctg_aml_response$sample[ctg_aml_response$sample == "20220610_7087"] = "FH_7087"
+ctg_aml_response$sample[ctg_aml_response$sample == "20220613_47007"] = "BERG_47007"
+ctg_aml_response$sample[ctg_aml_response$sample == "20220614_2030"] = "FH_2030"
+ctg_aml_response$sample[ctg_aml_response$sample == "20220614_8668"] = "FH_8668"
+ctg_aml_response$sample[ctg_aml_response$sample == "20220614_2683"] = "FHRB_2683"
+ctg_aml_response = ctg_aml_response[ctg_aml_response$sample %in% flow_response$sample,]
+ctg_aml_response = ctg_aml_response %>% mutate(dc = paste(drug1, "-",drug2))
+ctg_aml_response = ctg_aml_response[ctg_aml_response$dc %in% df$dc,]
+df_blast <- filter(df,marker == "blasts")
+ctg_common = merge(ctg_aml_response,df_blast, by.x = c("sample", "dc","dose1"), by.y = c("sample","dc","dose1"))
+n= 60
+ctg <- data.frame(sample = character(n),
+                  marker =rep("CTG",n),
+                  drug1 = character(n),
+                     drug2=character(n),
+                     dose1=double(n),dose2=double(n),response=double(n))
+ctg$sample <- ctg_common$sample;
+ctg$drug1 <- ctg_common$drug1.x;ctg$drug2 <- ctg_common$drug2.x
+ctg$dose1 <- ctg_common$dose1;ctg$dose2 <- ctg_common$dose2.x;
+ctg$response <- ctg_common$response.x;
+ctg$IR <- ctg_common$IR.x;ctg$zip <- ctg_common$zip.x;
+ctg$hsa <- ctg_common$hsa.x;ctg$bliss <- ctg_common$bliss.x;
+ctg$loewe <- ctg_common$loewe.x;ctg$dc = ctg_common$dc
+ctg_flow <- rbind(df,ctg)
+#saveRDS(ctg_flow,file = "data/rds/ctg_flow.rds")
+df <- ctg_flow %>% filter(!dose1 ==1)
+
+df <- df %>%
+   mutate(dos = case_when(dose1 == 10 ~ 1, 
+                          dose1 == 100 ~ 2,
+                          dose1 == 1000 ~ 3))
+
+## boxplot and points
+gg <- ggplot(df, aes(x=reorder_within(dc, -response,marker), response, color = dc, alpha = dos)) +
+    geom_boxplot() +
+  scale_x_reordered() +
+  facet_wrap(~marker, nrow = 4, scales = "free_x") + 
+    scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+    geom_jitter(position = position_jitter(width = 0.2, height = 0.2)) + 
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y = element_text(size = 9, face = "bold"),
+        legend.position=c(.8, .13)) +
+  labs (title = "" ,x= "", y = "Response") +
+  scale_color_discrete(name="Drug Combination" ) +
+  guides(alpha = FALSE)      
+
+```
+## Correlation between CTG and Flowcytometry results
+
+```{r}
+library(ggplot2)
+library(ggpubr)
+library(readxl)
+theme_set(theme_pubr())
+heatmap_final <- read_excel("data/xls/heatmap.xlsx")
+flow_single <- rowMeans(heatmap_final[1:5,3:7], na.rm=T)
+flow_comb <- rowMeans(heatmap_final[6:10,3:7], na.rm=T)
+ctg_single <- rowMeans(heatmap_final[16:20,3:7], na.rm=T)
+ctg_comb <- rowMeans(heatmap_final[21:25,3:7], na.rm=T)
+single <- data.frame("CTG" = ctg_single,"FC-BLAST" = flow_single)
+combination <- data.frame("CTG" = ctg_comb,"FC-BLAST" = flow_comb)
+gs <- ggplot(single, aes(x = ctg_single, y = flow_single)) +
+  geom_point(size=3,color ="darkred") +
+  theme_bw() +
+  theme(axis.text.x = element_text(colour="black", vjust = 0.5, hjust=1,size = 14,face = "bold"),
+        axis.text.y = element_text(colour="black",size = 14, face = "bold"),
+        axis.title = element_text(size = 14)) +
+  labs (title = "Single Drugs" ,x= "CTG", y = "FC-Blast") +
+  annotate("text", x = 10, y = 25, label = "cor = 0.97", size =6) +
+  geom_smooth(method = lm, se = T)
+gc <- ggplot(combination, aes(x = ctg_comb, y = flow_comb)) +
+  geom_point(size=3,color ="darkred") +
+  theme_bw() +
+  theme(axis.text.x = element_text(colour="black", vjust = 0.5, hjust=1,size = 14,face = "bold"),
+        axis.text.y = element_text(colour="black",size = 14, face = "bold"),
+        axis.title = element_text(size = 14)
+        ) +
+  labs (title = "Drug Combinations" ,x= "CTG", y = "FC-Blast", sixe =12) +
+  annotate("text", x = 18, y = 75, label = "cor = 0.90",size = 6) +
+  geom_smooth(method = lm, se = T)
+figure <- ggarrange(gs, gc,
+                    labels = c("A", "B"),
+                    ncol = 1, nrow = 2)
+
+```
