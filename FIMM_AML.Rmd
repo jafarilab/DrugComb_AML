@@ -758,7 +758,7 @@ figure
 
 ```{r, echo=FALSE, warning=FALSE, message=FALSE, include=FALSE}
 library(rcdk)
-dtc <- readRDS(file = "../FIMM_AML_DrugComb/data/rds/dtc.rds")
+dtc <- readRDS(file = "data/rds/dtc.rds")
 drug_inchi <- readRDS(file = "data/rds/drug_inchi.rds")
 drug_inchi_dtc <- left_join(drug_inchi,dtc,by = "InChI.Key")
 drug_inchi_dtc <- drug_inchi_dtc[,c(1,2)]
@@ -816,15 +816,31 @@ ggplot(dat, aes(x=sim, colour=Cluster)) +
     geom_vline(data=cdat, aes(xintercept=sim.mean,  colour=Cluster),
                linetype="dashed", size=1)
 
-ggplot(dat, aes(x=Cluster, y=sim, fill=Cluster,color =  Cluster)) + 
-  geom_boxplot(alpha = 0.5, col = "gray40") +   
-  theme_pubr(border = TRUE)+
+#ggplot(dat, aes(x=Cluster, y=sim, fill=Cluster,color =  Cluster)) + 
+ # geom_boxplot(alpha = 0.5, col = "gray40") +   
+#  theme_pubr(border = TRUE)+
 #  stat_summary(fun.x="mean")+
+ # theme(legend.position="top",legend.text = element_text(size=10, face="bold"),
+#        legend.title=element_blank()) +
+#  theme(axis.title.y=element_blank(),
+#        axis.text.y=element_blank(),
+#        axis.ticks.y=element_blank())+
+ # xlab("")+
+#  ylab("Dice similarity of SMILEs") +
+ # scale_fill_manual(values = c("slateblue3", "sienna1", "#353436")) +
+ # coord_flip()
+#######
+my_comparisons <- list(c('Cluster 2','Intercluster'),c('Cluster 1','Intercluster'))
+ggp_value <- ggboxplot(dat,x = 'Cluster',y = 'sim',fill = 'Cluster', col = "gray40",alpha=0.5)+
+stat_compare_means(comparisons = my_comparisons,color='red')+
+  theme_pubr(border = TRUE)+
   theme(legend.position="top",legend.text = element_text(size=10, face="bold"),
         legend.title=element_blank()) +
   theme(axis.title.y=element_blank(),
         axis.text.y=element_blank(),
-        axis.ticks.y=element_blank())+
+        axis.ticks.y=element_blank(),
+        axis.title.x = element_text(face = 'bold',size = 20),
+        axis.text.x = element_text(face = 'bold',size = 20))+
   xlab("")+
   ylab("Dice similarity of SMILEs") +
   scale_fill_manual(values = c("slateblue3", "sienna1", "#353436")) +
@@ -907,7 +923,10 @@ inset.plot <- ggplot(drug_mem_eff_tox %>% filter(efficacy <=15 & tox <=15), aes(
     scale_shape_manual(values = c(17, 16)) +
   geom_label_repel(data=filter(drug_mem_eff_tox, pval<0.05), size =4, fontface = "bold",alpha = 0.7, aes(label=drug), max.overlaps = 30)+
   theme_bw() +
-  theme(axis.title = element_text(size = 12)) +
+  theme(axis.title = element_text(size = 15,face = 'bold'),
+        axis.text = element_text(face = 'bold'),
+        legend.title = element_text(size = 12,face = 'bold'),
+        legend.text = element_text(size = 10,face = 'bold')) +
   guides(shape = guide_legend("Cluster"), fill = "none", color = "none") +
   xlab("Percentage of inhibition based on AMl samples (Efficacy)") + ylab("Percentage of inhibition based on Healthy sample (Toxicity)")
 plot.with.inset <-
@@ -923,6 +942,17 @@ tox_eff_plot <- ggplot(drug_mem_eff_tox, aes(x = efficacy, y = tox))+
   theme_bw() +
   theme(legend.position = "none") +
   xlab("Efficacy") + ylab("Toxicity")
+
+
+
+
+ggarrange(ggp_value,NULL,plot.with.inset,
+          ncol =1, nrow = 3,  align = "hv", 
+          widths = c(2, 0.1,1), heights = c(1,0.05, 2),
+          common.legend = TRUE,labels = c("A", "", "B"),
+          label.x = c(0.03),  # X-coordinate for labels
+          label.y = c(1.05) )
+# save 8|12
 ```
 
 # CTG data analysis
