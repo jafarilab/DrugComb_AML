@@ -903,20 +903,21 @@ main.plot <- ggplot(drug_mem_eff_tox, aes(x = efficacy, y = tox))+
 inset.plot <- ggplot(drug_mem_eff_tox %>% filter(efficacy <=15 & tox <=15), aes(x = efficacy, y = tox))+
   geom_density_2d_filled(alpha = 0.5) +
   geom_density_2d(size = 0.25, colour = "black")+
-  geom_point(aes(x = efficacy, y = tox, col = -log(pval)))+
+  geom_point(aes(x = efficacy, y = tox, col = -log(pval), shape = factor(member)),size  =2.5)+
   geom_label_repel(data=filter(drug_mem_eff_tox, pval<0.05), size =4, fontface = "bold",alpha = 0.7, aes(label=drug), max.overlaps = 30)+
   theme_bw() +
   theme(legend.position = "none", axis.title = element_text(size = 12)  ) +
+  labs(shape = "Cluster") + 
   xlab("Percentage of inhibition based on AMl samples (Efficacy)") + ylab("Percentage of inhibition based on Healthy sample (Toxicity)")
 plot.with.inset <-
   ggdraw() +
   draw_plot(inset.plot) +
   draw_plot(main.plot, x = 0.06, y = .55, width = .45, height = .45)
 #save 8x6 pdf
-ggplot(drug_mem_eff_tox, aes(x = efficacy, y = tox))+
+tox_eff_plot <- ggplot(drug_mem_eff_tox, aes(x = efficacy, y = tox))+
   geom_density_2d_filled(alpha = 0.5) +
   geom_density_2d(size = 0.25, colour = "black")+
-  geom_point(aes(x = efficacy, y = tox, col = -log(pval)))+
+  geom_point(aes(x = efficacy, y = tox, col = -log(pval), shape = member),size  =3)+
   geom_label_repel(data=filter(drug_mem_eff_tox, pval<0.05), size =2, fontface = "bold",alpha = 0.7, aes(label=drug), max.overlaps = 30)+
   theme_bw() +
   theme(legend.position = "none") +
@@ -1485,3 +1486,91 @@ figure <- ggarrange(gs, gc,
                     ncol = 1, nrow = 2)
 
 ```
+
+## Cell- lines
+
+```{r}
+Final_RTG <- read_excel("Documents/Submitted_paper/oncogenisis/Final_RTG.xlsx")
+Final_RTG$Drug[Final_RTG$Drug=='LS']='LY30-Sapa'
+Final_RTG_ls_kg <- Final_RTG %>% dplyr::filter(Drug %in% c("LY30-Sapa","Sapanisertib","LY3009120") & `Drug_concentration(uM)`== 1 & 
+                                                 Cell_line %in% c("KG-1"))
+
+Final_RTG_ls_kg_ls <- Final_RTG_ls_kg %>% dplyr::filter(Drug %in% c("LY30-Sapa"))
+Final_RTG_ls_kg_Sap <- Final_RTG_ls_kg %>% dplyr::filter(Drug %in% c("Sapanisertib"))
+Final_RTG_ls_kg_LY <- Final_RTG_ls_kg %>% dplyr::filter(Drug %in% c("LY3009120"))
+
+Final_RTG_ls_kg$Drug=factor(Final_RTG_ls_kg$Drug,levels = c("Sapanisertib","LY3009120","LY30-Sapa"))
+my_comparisons1 <- list( c("Sapanisertib", "LY30-Sapa") )
+p1=ggboxplot(Final_RTG_ls_kg,x = 'Drug',y = 'Cell_viability',fill = 'Drug',outlier.shape = NA)+
+  stat_compare_means(comparisons = my_comparisons1)+
+  xlab('')+ggtitle('KG-1')+
+  scale_fill_manual(values = c('skyblue','yellow','green'))+
+  theme_bw(base_line_size = .1)+
+  theme(legend.position = 'none',
+        axis.title = element_text(size = 14,face = 'bold'),
+        axis.text = element_text(size = 12,face = 'bold'),
+        title = element_text(size = 17,face = 'bold'))
+#-------------HNT-----------
+Final_RTG_ls_hnt <- Final_RTG %>% dplyr::filter(Drug %in% c("LY30-Sapa","Sapanisertib","LY3009120") & `Drug_concentration(uM)`== 1 & 
+                                                 Cell_line %in% c("HNT"))
+Final_RTG_ls_hnt_ls <- Final_RTG_ls_hnt %>% dplyr::filter(Drug %in% c("LY30-Sapa"))
+Final_RTG_ls_hnt_Sap <- Final_RTG_ls_hnt %>% dplyr::filter(Drug %in% c("Sapanisertib"))
+Final_RTG_ls_hnt_LY <- Final_RTG_ls_hnt %>% dplyr::filter(Drug %in% c("LY3009120"))
+
+
+Final_RTG_ls_hnt$Drug=factor(Final_RTG_ls_hnt$Drug,levels = c("Sapanisertib","LY3009120","LY30-Sapa"))
+my_comparisons2 <- list( c("LY3009120", "LY30-Sapa") )
+p2=ggboxplot(Final_RTG_ls_hnt,x = 'Drug',y = 'Cell_viability',fill = 'Drug',outlier.shape = NA)+xlab('')+ylim(0,110)+
+  stat_compare_means(comparisons = my_comparisons2,label.y = 90)+
+  theme_bw(base_line_size = .1)+ggtitle('HNT')+
+  scale_fill_manual(values = c('skyblue','yellow','green'))+
+  theme(legend.position = 'none',
+        axis.title.y = element_blank(),
+        axis.title = element_text(size = 14,face = 'bold'),
+        axis.text = element_text(size = 12,face = 'bold'),
+        title = element_text(size = 17,face = 'bold'))
+
+#-------------Nomo-----------
+Final_RTG_ls_nomo <- Final_RTG %>% dplyr::filter(Drug %in% c("LY30-Sapa","Sapanisertib","LY3009120") & `Drug_concentration(uM)`== 1 & 
+                                                 Cell_line %in% c("NOMO"))
+Final_RTG_ls_nomo_ls <- Final_RTG_ls_nomo %>% dplyr::filter(Drug %in% c("LY30-Sapa"))
+Final_RTG_ls_nomo_Sap <- Final_RTG_ls_nomo %>% dplyr::filter(Drug %in% c("Sapanisertib"))
+Final_RTG_ls_nomo_LY <- Final_RTG_ls_nomo %>% dplyr::filter(Drug %in% c("LY3009120"))
+
+
+Final_RTG_ls_nomo$Drug=factor(Final_RTG_ls_nomo$Drug,levels = c("Sapanisertib","LY3009120","LY30-Sapa"))
+my_comparisons3 <- list( c("LY3009120", "LY30-Sapa") , c("Sapanisertib", "LY30-Sapa"))
+p3=ggboxplot(Final_RTG_ls_nomo,x = 'Drug',y = 'Cell_viability',fill = 'Drug',outlier.shape = NA)+xlab('')+
+  stat_compare_means(comparisons = my_comparisons3,label.y = c(55,78))+
+  theme_bw(base_line_size = .1)+ggtitle('NOMO')+ylim(0,113)+
+  scale_fill_manual(values = c('skyblue','yellow','green'))+
+  theme(legend.position = 'none',
+        axis.title = element_text(size = 14,face = 'bold'),
+        axis.text = element_text(size = 12,face = 'bold'),
+        title = element_text(size = 17,face = 'bold'))
+
+#-------------ML2-----------
+Final_RTG_ls_hl60 <- Final_RTG %>% dplyr::filter(Drug %in% c("LY30-Sapa","Sapanisertib","LY3009120") & `Drug_concentration(uM)`== 1 & 
+                                                 Cell_line %in% c("HL60"))
+
+Final_RTG_ls_hl_ls <- Final_RTG_ls_hl60 %>% dplyr::filter(Drug %in% c("LY30-Sapa"))
+Final_RTG_ls_hl_Sap <- Final_RTG_ls_hl60 %>% dplyr::filter(Drug %in% c("Sapanisertib"))
+Final_RTG_ls_hl_LY <- Final_RTG_ls_hl60 %>% dplyr::filter(Drug %in% c("LY3009120"))
+wilcox.test(Final_RTG_ls_hl_ls$Cell_viability,Final_RTG_ls_hl_Sap$Cell_viability)
+
+
+Final_RTG_ls_hl60$Drug=factor(Final_RTG_ls_hl60$Drug,levels = c("Sapanisertib","LY3009120","LY30-Sapa"))
+my_comparisons4 <- my_comparisons3
+p4=ggboxplot(Final_RTG_ls_hl60,x = 'Drug',y = 'Cell_viability',fill = 'Drug',outlier.shape = NA)+xlab('')+
+  stat_compare_means(comparisons = my_comparisons4,label.y = c(70,90))+
+  theme_bw(base_line_size = .1)+ggtitle('HL60')+ylim(0,110)+
+  scale_fill_manual(values = c('skyblue','yellow','green'))+
+  theme(legend.position = 'none',
+        axis.title.y = element_blank(),
+        axis.title = element_text(size = 14,face = 'bold'),
+        axis.text = element_text(size = 12,face = 'bold'),
+        title = element_text(size = 17,face = 'bold'))
+
+```
+
+
