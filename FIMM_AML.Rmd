@@ -758,7 +758,7 @@ figure
 
 ```{r, echo=FALSE, warning=FALSE, message=FALSE, include=FALSE}
 library(rcdk)
-dtc <- readRDS(file = "data/rds/dtc.rds")
+dtc <- readRDS(file = "../FIMM_AML_DrugComb/data/rds/dtc.rds")
 drug_inchi <- readRDS(file = "data/rds/drug_inchi.rds")
 drug_inchi_dtc <- left_join(drug_inchi,dtc,by = "InChI.Key")
 drug_inchi_dtc <- drug_inchi_dtc[,c(1,2)]
@@ -904,10 +904,11 @@ inset.plot <- ggplot(drug_mem_eff_tox %>% filter(efficacy <=15 & tox <=15), aes(
   geom_density_2d_filled(alpha = 0.5) +
   geom_density_2d(size = 0.25, colour = "black")+
   geom_point(aes(x = efficacy, y = tox, col = -log(pval), shape = factor(member)),size  =2.5)+
+    scale_shape_manual(values = c(17, 16)) +
   geom_label_repel(data=filter(drug_mem_eff_tox, pval<0.05), size =4, fontface = "bold",alpha = 0.7, aes(label=drug), max.overlaps = 30)+
   theme_bw() +
-  theme(legend.position = "none", axis.title = element_text(size = 12)  ) +
-  labs(shape = "Cluster") + 
+  theme(axis.title = element_text(size = 12)) +
+  guides(shape = guide_legend("Cluster"), fill = "none", color = "none") +
   xlab("Percentage of inhibition based on AMl samples (Efficacy)") + ylab("Percentage of inhibition based on Healthy sample (Toxicity)")
 plot.with.inset <-
   ggdraw() +
